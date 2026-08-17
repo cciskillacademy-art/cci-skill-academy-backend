@@ -471,6 +471,56 @@ ADMIN_HTML = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- MODAL: ADD MANUAL ENQUIRY -->
+    <div id="manualEnquiryModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-lg p-6 rounded-2xl shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-user-plus text-brand-400"></i> Add Student Enquiry
+                </h3>
+                <button onclick="closeModal('manualEnquiryModal')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <form onsubmit="saveManualEnquiry(event)" class="space-y-3">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Student Full Name *</label>
+                        <input type="text" id="manualEnqName" required placeholder="e.g. Anand Kumar"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Mobile Number *</label>
+                        <input type="text" id="manualEnqMobile" required placeholder="e.g. 9876543210"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Email Address</label>
+                        <input type="email" id="manualEnqEmail" placeholder="e.g. student@gmail.com"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Course of Interest *</label>
+                        <input type="text" id="manualEnqCourse" required placeholder="e.g. Python Programming / Tally"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Notes / Message</label>
+                    <textarea id="manualEnqMessage" rows="2" placeholder="e.g. Walk-in enquiry at Salem center, interested in weekend batch..."
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500"></textarea>
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3">
+                    <button type="button" onclick="closeModal('manualEnquiryModal')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">Cancel</button>
+                    <button type="submit" class="px-5 py-2 bg-brand-600 hover:bg-brand-500 rounded-xl text-xs font-semibold text-white">Save Enquiry</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- JAVASCRIPT LOGIC -->
     <script>
         let authToken = localStorage.getItem("cci_admin_token") || "cci-master-admin-session-token";
@@ -480,6 +530,40 @@ ADMIN_HTML = """<!DOCTYPE html>
             checkAuth();
             loadDashboard();
         });
+
+        function openNewEnquiryModal() {
+            document.getElementById("manualEnqName").value = "";
+            document.getElementById("manualEnqMobile").value = "";
+            document.getElementById("manualEnqEmail").value = "";
+            document.getElementById("manualEnqCourse").value = "";
+            document.getElementById("manualEnqMessage").value = "";
+            document.getElementById("manualEnquiryModal").classList.remove("hidden");
+        }
+
+        async function saveManualEnquiry(e) {
+            e.preventDefault();
+            const payload = {
+                full_name: document.getElementById("manualEnqName").value,
+                mobile: document.getElementById("manualEnqMobile").value,
+                email: document.getElementById("manualEnqEmail").value,
+                course_interest: document.getElementById("manualEnqCourse").value,
+                message: document.getElementById("manualEnqMessage").value
+            };
+
+            const res = await fetch("/api/enquiries", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                closeModal("manualEnquiryModal");
+                loadEnquiries();
+                loadDashboard();
+            } else {
+                alert("Error saving enquiry");
+            }
+        }
 
         function checkAuth() {
             if (!authToken) {
