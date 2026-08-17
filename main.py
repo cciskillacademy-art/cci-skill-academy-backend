@@ -7,9 +7,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from database import get_db, init_db, hash_password
 
@@ -31,11 +29,1045 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(__file__)
-TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
-os.makedirs(os.path.join(TEMPLATES_DIR, "admin"), exist_ok=True)
-os.makedirs(os.path.join(TEMPLATES_DIR, "verify"), exist_ok=True)
-templates = Jinja2Templates(directory=TEMPLATES_DIR)
+# Embedded Web Templates (Zero External Dependency)
+ADMIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CCI Skill Academy - Admin Management Portal</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                            900: '#312e81',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        [x-cloak] { display: none !important; }
+        .tab-active {
+            background-color: #4f46e5;
+            color: white !important;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans antialiased flex flex-col">
+
+    <!-- LOGIN OVERLAY (Shows when not authenticated) -->
+    <div id="loginModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-md p-8 rounded-2xl shadow-2xl">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-brand-600 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-brand-500/30">
+                    <i class="fa-solid fa-graduation-cap text-3xl text-white"></i>
+                </div>
+                <h2 class="text-2xl font-bold text-white">CCI Skill Academy</h2>
+                <p class="text-sm text-slate-400">Admin Portal Sign In</p>
+            </div>
+
+            <form id="loginForm" onsubmit="handleLogin(event)" class="space-y-4">
+                <div id="loginError" class="hidden p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-300 text-xs"></div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Username</label>
+                    <div class="relative">
+                        <i class="fa-solid fa-user absolute left-3 top-3.5 text-slate-400 text-sm"></i>
+                        <input type="text" id="loginUsername" value="admin" required
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-brand-500 text-sm">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Password</label>
+                    <div class="relative">
+                        <i class="fa-solid fa-lock absolute left-3 top-3.5 text-slate-400 text-sm"></i>
+                        <input type="password" id="loginPassword" value="Admin@123" required
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-brand-500 text-sm">
+                    </div>
+                    <p class="text-[11px] text-slate-500 mt-1">Default Login: admin / Admin@123</p>
+                </div>
+                <button type="submit" id="loginBtn"
+                    class="w-full bg-brand-600 hover:bg-brand-500 text-white font-semibold py-3 rounded-xl transition duration-200 shadow-lg shadow-brand-500/25 flex items-center justify-center">
+                    <span>Sign In to Dashboard</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- TOP NAVIGATION BAR -->
+    <header class="bg-slate-800/90 backdrop-blur-md border-b border-slate-700 sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-brand-600 rounded-xl flex items-center justify-center text-white shadow-md shadow-brand-500/20">
+                        <i class="fa-solid fa-graduation-cap text-lg"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-base font-bold text-white leading-tight">CCI Skill Academy</h1>
+                        <span class="text-xs text-brand-400 font-medium tracking-wide">ADMIN MANAGEMENT PORTAL</span>
+                    </div>
+                </div>
+
+                <!-- Right Actions -->
+                <div class="flex items-center gap-3">
+                    <a href="/verify" target="_blank" class="hidden sm:inline-flex items-center gap-2 text-xs text-slate-300 hover:text-white bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-600 transition">
+                        <i class="fa-solid fa-external-link text-emerald-400"></i> Open Verify Portal
+                    </a>
+                    <a href="/docs" target="_blank" class="hidden sm:inline-flex items-center gap-2 text-xs text-slate-300 hover:text-white bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-600 transition">
+                        <i class="fa-solid fa-code text-amber-400"></i> API Docs
+                    </a>
+                    <button onclick="logout()" class="flex items-center gap-2 text-xs text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-900/40 px-3 py-1.5 rounded-lg border border-red-800/50 transition">
+                        <i class="fa-solid fa-right-from-bracket"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN APP CONTAINER -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full flex flex-col">
+
+        <!-- TAB NAVIGATION -->
+        <div class="flex flex-wrap gap-2 p-1.5 bg-slate-800 border border-slate-700 rounded-xl mb-6">
+            <button onclick="switchTab('dashboard')" id="tabBtn-dashboard" class="tab-active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition text-slate-300 hover:text-white">
+                <i class="fa-solid fa-gauge-high"></i> Dashboard
+            </button>
+            <button onclick="switchTab('enquiries')" id="tabBtn-enquiries" class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition text-slate-300 hover:text-white">
+                <i class="fa-solid fa-users"></i> Enquiries & Admissions <span id="badgeNewEnquiries" class="hidden ml-1 px-2 py-0.5 text-xs bg-red-500 text-white rounded-full font-bold">0</span>
+            </button>
+            <button onclick="switchTab('certificates')" id="tabBtn-certificates" class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition text-slate-300 hover:text-white">
+                <i class="fa-solid fa-award"></i> Certificate Registry
+            </button>
+            <button onclick="switchTab('courses')" id="tabBtn-courses" class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition text-slate-300 hover:text-white">
+                <i class="fa-solid fa-book-open"></i> Courses & Batches
+            </button>
+        </div>
+
+        <!-- ================= TAB 1: DASHBOARD OVERVIEW ================= -->
+        <div id="tabContent-dashboard" class="space-y-6">
+            <!-- Stat Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Enquiries</span>
+                        <div class="w-9 h-9 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                            <i class="fa-solid fa-user-group text-lg"></i>
+                        </div>
+                    </div>
+                    <div id="statTotalEnquiries" class="text-2xl font-bold text-white">0</div>
+                    <p class="text-xs text-slate-400 mt-1">Student admission leads</p>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">New / Pending</span>
+                        <div class="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                            <i class="fa-solid fa-bell text-lg"></i>
+                        </div>
+                    </div>
+                    <div id="statNewEnquiries" class="text-2xl font-bold text-amber-400">0</div>
+                    <p class="text-xs text-slate-400 mt-1">Awaiting callback/action</p>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Certificates Issued</span>
+                        <div class="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                            <i class="fa-solid fa-certificate text-lg"></i>
+                        </div>
+                    </div>
+                    <div id="statTotalCertificates" class="text-2xl font-bold text-emerald-400">0</div>
+                    <p class="text-xs text-slate-400 mt-1">Verified on online portal</p>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 p-5 rounded-2xl">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Courses</span>
+                        <div class="w-9 h-9 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center">
+                            <i class="fa-solid fa-layer-group text-lg"></i>
+                        </div>
+                    </div>
+                    <div id="statActiveCourses" class="text-2xl font-bold text-sky-400">0</div>
+                    <p class="text-xs text-slate-400 mt-1">Displayed on catalog</p>
+                </div>
+            </div>
+
+            <!-- Recent Enquiries Widget -->
+            <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-clock-rotate-left text-brand-400"></i> Recent Enquiries
+                    </h3>
+                    <button onclick="switchTab('enquiries')" class="text-xs text-brand-400 hover:text-brand-300 font-semibold">View All &rarr;</button>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="text-xs text-slate-400 uppercase bg-slate-900/60 rounded-xl">
+                            <tr>
+                                <th class="py-3 px-4 rounded-l-lg">Student Name</th>
+                                <th class="py-3 px-4">Mobile</th>
+                                <th class="py-3 px-4">Course Interest</th>
+                                <th class="py-3 px-4">Status</th>
+                                <th class="py-3 px-4 rounded-r-lg">Date</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentEnquiriesTable" class="divide-y divide-slate-700/50">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 2: ENQUIRIES & LEADS ================= -->
+        <div id="tabContent-enquiries" class="hidden space-y-4">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-800 p-4 rounded-2xl border border-slate-700">
+                <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs text-slate-400 font-semibold uppercase">Filter by Status:</span>
+                    <button onclick="loadEnquiries('All')" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-xs rounded-lg font-medium">All</button>
+                    <button onclick="loadEnquiries('New')" class="px-3 py-1 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 text-xs rounded-lg font-medium">New</button>
+                    <button onclick="loadEnquiries('Contacted')" class="px-3 py-1 bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 text-xs rounded-lg font-medium">Contacted</button>
+                    <button onclick="loadEnquiries('Enrolled')" class="px-3 py-1 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 text-xs rounded-lg font-medium">Enrolled</button>
+                    <button onclick="loadEnquiries('Closed')" class="px-3 py-1 bg-slate-700/50 text-slate-400 hover:bg-slate-700 text-xs rounded-lg font-medium">Closed</button>
+                </div>
+                <div class="w-full sm:w-auto">
+                    <button onclick="openNewEnquiryModal()" class="w-full sm:w-auto bg-brand-600 hover:bg-brand-500 text-white text-xs px-4 py-2 rounded-xl font-semibold flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-plus"></i> Add Manual Enquiry
+                    </button>
+                </div>
+            </div>
+
+            <!-- Enquiries Table -->
+            <div class="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="text-xs text-slate-400 uppercase bg-slate-900/80">
+                            <tr>
+                                <th class="py-3 px-4">#</th>
+                                <th class="py-3 px-4">Student</th>
+                                <th class="py-3 px-4">Mobile & Email</th>
+                                <th class="py-3 px-4">Course Interest</th>
+                                <th class="py-3 px-4">Message / Notes</th>
+                                <th class="py-3 px-4">Status</th>
+                                <th class="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="allEnquiriesTable" class="divide-y divide-slate-700">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 3: CERTIFICATE REGISTRY ================= -->
+        <div id="tabContent-certificates" class="hidden space-y-4">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-800 p-4 rounded-2xl border border-slate-700">
+                <div class="relative w-full sm:w-80">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-400 text-xs"></i>
+                    <input type="text" id="searchCertInput" oninput="filterCertificates()" placeholder="Search by name or cert number..."
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                </div>
+                <button onclick="openNewCertModal()" class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20">
+                    <i class="fa-solid fa-plus"></i> Issue New Certificate
+                </button>
+            </div>
+
+            <!-- Certificates Table -->
+            <div class="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="text-xs text-slate-400 uppercase bg-slate-900/80">
+                            <tr>
+                                <th class="py-3 px-4">Cert Number</th>
+                                <th class="py-3 px-4">Student Name</th>
+                                <th class="py-3 px-4">Course Name</th>
+                                <th class="py-3 px-4">Issue Date</th>
+                                <th class="py-3 px-4">Grade / Score</th>
+                                <th class="py-3 px-4">Status</th>
+                                <th class="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="allCertificatesTable" class="divide-y divide-slate-700">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 4: COURSES & BATCHES ================= -->
+        <div id="tabContent-courses" class="hidden space-y-4">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-800 p-4 rounded-2xl border border-slate-700">
+                <div>
+                    <h3 class="text-sm font-bold text-white">Course Offerings</h3>
+                    <p class="text-xs text-slate-400">Courses listed here are served directly to the website.</p>
+                </div>
+                <button onclick="openNewCourseModal()" class="w-full sm:w-auto bg-brand-600 hover:bg-brand-500 text-white text-xs px-4 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-plus"></i> Add New Course
+                </button>
+            </div>
+
+            <!-- Courses Grid -->
+            <div id="coursesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Populated via JS -->
+            </div>
+        </div>
+
+    </div>
+
+    <!-- MODAL: ADD / EDIT CERTIFICATE -->
+    <div id="certModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-lg p-6 rounded-2xl shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="certModalTitle" class="text-lg font-bold text-white">Issue Student Certificate</h3>
+                <button onclick="closeModal('certModal')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <form onsubmit="saveCertificate(event)" class="space-y-3">
+                <input type="hidden" id="certId">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Certificate Number *</label>
+                        <input type="text" id="certNumber" required placeholder="e.g. CCI-2026-0201"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Student Full Name *</label>
+                        <input type="text" id="certStudentName" required placeholder="e.g. Ramesh K"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Course Name *</label>
+                    <input type="text" id="certCourseName" required placeholder="e.g. Python Full Stack Development"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Duration</label>
+                        <input type="text" id="certDuration" placeholder="e.g. 3 Months" value="3 Months"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Issue Date *</label>
+                        <input type="date" id="certIssueDate" required
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Grade / Score</label>
+                        <input type="text" id="certGrade" placeholder="e.g. First Class (A+)" value="First Class"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Remarks / Note</label>
+                    <textarea id="certRemarks" rows="2"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">Verified and issued by Career Connext International Skill Academy.</textarea>
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3">
+                    <button type="button" onclick="closeModal('certModal')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">Cancel</button>
+                    <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-semibold text-white">Save Certificate</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD / EDIT COURSE -->
+    <div id="courseModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-lg p-6 rounded-2xl shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="courseModalTitle" class="text-lg font-bold text-white">Add New Course</h3>
+                <button onclick="closeModal('courseModal')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <form onsubmit="saveCourse(event)" class="space-y-3">
+                <input type="hidden" id="courseId">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Course Title *</label>
+                    <input type="text" id="courseTitle" required placeholder="e.g. Master in Python Programming"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Category *</label>
+                        <input type="text" id="courseCategory" required placeholder="e.g. Software / Language"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Duration *</label>
+                        <input type="text" id="courseDuration" required placeholder="e.g. 2 Months"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Course Fee</label>
+                        <input type="text" id="courseFee" placeholder="e.g. Rs. 8,000"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Description</label>
+                    <textarea id="courseDesc" rows="2" placeholder="Course overview and career opportunities..."
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500"></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Syllabus Highlights (comma separated)</label>
+                    <input type="text" id="courseSyllabus" placeholder="e.g. Basics, Advanced SQL, Live Projects, Interview Prep"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3">
+                    <button type="button" onclick="closeModal('courseModal')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">Cancel</button>
+                    <button type="submit" class="px-5 py-2 bg-brand-600 hover:bg-brand-500 rounded-xl text-xs font-semibold text-white">Save Course</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: UPDATE ENQUIRY STATUS / NOTES -->
+    <div id="enquiryModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-md p-6 rounded-2xl shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-bold text-white">Update Lead Status & Notes</h3>
+                <button onclick="closeModal('enquiryModal')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <form onsubmit="saveEnquiryUpdate(event)" class="space-y-4">
+                <input type="hidden" id="editEnquiryId">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Lead Status</label>
+                    <select id="editEnquiryStatus" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                        <option value="New">New (Uncontacted)</option>
+                        <option value="Contacted">Contacted / In Discussion</option>
+                        <option value="Enrolled">Enrolled in Batch</option>
+                        <option value="Closed">Closed / Not Interested</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Admin Notes / Remarks</label>
+                    <textarea id="editEnquiryNotes" rows="3" placeholder="e.g. Student requested weekend morning batch, called on 15th..."
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500"></textarea>
+                </div>
+                <div class="flex justify-end gap-2 pt-2">
+                    <button type="button" onclick="closeModal('enquiryModal')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">Cancel</button>
+                    <button type="submit" class="px-5 py-2 bg-brand-600 hover:bg-brand-500 rounded-xl text-xs font-semibold text-white">Update Lead</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT LOGIC -->
+    <script>
+        let authToken = localStorage.getItem("cci_admin_token") || "cci-master-admin-session-token";
+        let allCertificates = [];
+
+        window.addEventListener("DOMContentLoaded", () => {
+            checkAuth();
+            loadDashboard();
+        });
+
+        function checkAuth() {
+            if (!authToken) {
+                document.getElementById("loginModal").classList.remove("hidden");
+            } else {
+                document.getElementById("loginModal").classList.add("hidden");
+            }
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const u = document.getElementById("loginUsername").value;
+            const p = document.getElementById("loginPassword").value;
+            const err = document.getElementById("loginError");
+            err.classList.add("hidden");
+
+            try {
+                const res = await fetch("/api/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: u, password: p })
+                });
+                const data = await res.json();
+                if (res.ok && data.token) {
+                    authToken = data.token;
+                    localStorage.setItem("cci_admin_token", authToken);
+                    document.getElementById("loginModal").classList.add("hidden");
+                    loadDashboard();
+                } else {
+                    err.innerText = data.detail || "Invalid login credentials";
+                    err.classList.remove("hidden");
+                }
+            } catch (error) {
+                err.innerText = "Error connecting to server";
+                err.classList.remove("hidden");
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem("cci_admin_token");
+            authToken = null;
+            document.getElementById("loginModal").classList.remove("hidden");
+        }
+
+        function switchTab(tab) {
+            ['dashboard', 'enquiries', 'certificates', 'courses'].forEach(t => {
+                document.getElementById(`tabContent-${t}`).classList.add("hidden");
+                document.getElementById(`tabBtn-${t}`).classList.remove("tab-active");
+            });
+
+            document.getElementById(`tabContent-${tab}`).classList.remove("hidden");
+            document.getElementById(`tabBtn-${tab}`).classList.add("tab-active");
+
+            if (tab === 'dashboard') loadDashboard();
+            if (tab === 'enquiries') loadEnquiries('All');
+            if (tab === 'certificates') loadCertificates();
+            if (tab === 'courses') loadCourses();
+        }
+
+        // ================= API CALLS =================
+
+        async function loadDashboard() {
+            try {
+                const res = await fetch("/api/dashboard/stats", {
+                    headers: { "Authorization": `Bearer ${authToken}` }
+                });
+                if (!res.ok) { logout(); return; }
+                const data = await res.json();
+                
+                document.getElementById("statTotalEnquiries").innerText = data.stats.total_enquiries;
+                document.getElementById("statNewEnquiries").innerText = data.stats.new_enquiries;
+                document.getElementById("statTotalCertificates").innerText = data.stats.total_certificates;
+                document.getElementById("statActiveCourses").innerText = data.stats.active_courses;
+
+                if (data.stats.new_enquiries > 0) {
+                    const badge = document.getElementById("badgeNewEnquiries");
+                    badge.innerText = data.stats.new_enquiries;
+                    badge.classList.remove("hidden");
+                }
+
+                // Recent table
+                const tbody = document.getElementById("recentEnquiriesTable");
+                tbody.innerHTML = "";
+                if (data.recent_enquiries.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-slate-500">No enquiries received yet.</td></tr>`;
+                    return;
+                }
+
+                data.recent_enquiries.forEach(enq => {
+                    const statusColor = enq.status === 'New' ? 'bg-amber-500/20 text-amber-300' :
+                                      enq.status === 'Enrolled' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-700 text-slate-300';
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-750">
+                            <td class="py-3 px-4 font-semibold text-white">${enq.full_name}</td>
+                            <td class="py-3 px-4 font-mono text-xs">${enq.mobile}</td>
+                            <td class="py-3 px-4">${enq.course_interest}</td>
+                            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-xs font-semibold ${statusColor}">${enq.status}</span></td>
+                            <td class="py-3 px-4 text-xs text-slate-400">${enq.created_at.split(' ')[0]}</td>
+                        </tr>
+                    `;
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadEnquiries(filterStatus = 'All') {
+            try {
+                const url = filterStatus === 'All' ? '/api/admin/enquiries' : `/api/admin/enquiries?status=${filterStatus}`;
+                const res = await fetch(url, { headers: { "Authorization": `Bearer ${authToken}` } });
+                const enquiries = await res.json();
+
+                const tbody = document.getElementById("allEnquiriesTable");
+                tbody.innerHTML = "";
+                if (enquiries.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-slate-500">No enquiries found.</td></tr>`;
+                    return;
+                }
+
+                enquiries.forEach((enq, idx) => {
+                    const statusColor = enq.status === 'New' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                                      enq.status === 'Contacted' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
+                                      enq.status === 'Enrolled' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-slate-700 text-slate-300';
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-slate-750">
+                            <td class="py-3 px-4 text-slate-400 text-xs">${idx + 1}</td>
+                            <td class="py-3 px-4">
+                                <div class="font-bold text-white">${enq.full_name}</div>
+                                <div class="text-xs text-slate-400">${enq.created_at}</div>
+                            </td>
+                            <td class="py-3 px-4">
+                                <div class="font-mono text-xs text-emerald-400"><i class="fa-solid fa-phone text-[10px] mr-1"></i>${enq.mobile}</div>
+                                <div class="text-xs text-slate-400">${enq.email || '-'}</div>
+                            </td>
+                            <td class="py-3 px-4 font-medium text-indigo-300">${enq.course_interest}</td>
+                            <td class="py-3 px-4 text-xs">
+                                <div class="text-slate-200">${enq.message || '-'}</div>
+                                ${enq.admin_notes ? `<div class="text-amber-400 text-[11px] mt-1"><i class="fa-solid fa-note-sticky mr-1"></i>${enq.admin_notes}</div>` : ''}
+                            </td>
+                            <td class="py-3 px-4"><span class="px-2.5 py-1 rounded-full text-xs font-semibold ${statusColor}">${enq.status}</span></td>
+                            <td class="py-3 px-4 text-right space-x-2">
+                                <button onclick="openEnquiryModal(${enq.id}, '${enq.status}', '${(enq.admin_notes || '').replace(/'/g, "\\'")}')" class="p-1.5 bg-slate-700 hover:bg-slate-600 text-brand-300 rounded-lg text-xs" title="Update Status">
+                                    <i class="fa-solid fa-pen-to-square"></i>
+                                </button>
+                                <button onclick="deleteEnquiry(${enq.id})" class="p-1.5 bg-red-950/50 hover:bg-red-900/60 text-red-400 rounded-lg text-xs" title="Delete">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function openEnquiryModal(id, status, notes) {
+            document.getElementById("editEnquiryId").value = id;
+            document.getElementById("editEnquiryStatus").value = status;
+            document.getElementById("editEnquiryNotes").value = notes;
+            document.getElementById("enquiryModal").classList.remove("hidden");
+        }
+
+        async function saveEnquiryUpdate(e) {
+            e.preventDefault();
+            const id = document.getElementById("editEnquiryId").value;
+            const status = document.getElementById("editEnquiryStatus").value;
+            const admin_notes = document.getElementById("editEnquiryNotes").value;
+
+            await fetch(`/api/admin/enquiries/${id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${authToken}` },
+                body: JSON.stringify({ status, admin_notes })
+            });
+            closeModal("enquiryModal");
+            loadEnquiries();
+            loadDashboard();
+        }
+
+        async function deleteEnquiry(id) {
+            if (!confirm("Are you sure you want to delete this enquiry?")) return;
+            await fetch(`/api/admin/enquiries/${id}`, {
+                method: "DELETE",
+                headers: { "Authorization": `Bearer ${authToken}` }
+            });
+            loadEnquiries();
+            loadDashboard();
+        }
+
+        // ================= CERTIFICATES =================
+
+        async function loadCertificates() {
+            try {
+                const res = await fetch("/api/admin/certificates", { headers: { "Authorization": `Bearer ${authToken}` } });
+                allCertificates = await res.json();
+                renderCertificatesTable(allCertificates);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function filterCertificates() {
+            const q = document.getElementById("searchCertInput").value.toLowerCase();
+            const filtered = allCertificates.filter(c => 
+                c.student_name.toLowerCase().includes(q) || 
+                c.cert_number.toLowerCase().includes(q) || 
+                c.course_name.toLowerCase().includes(q)
+            );
+            renderCertificatesTable(filtered);
+        }
+
+        function renderCertificatesTable(certs) {
+            const tbody = document.getElementById("allCertificatesTable");
+            tbody.innerHTML = "";
+            if (certs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-slate-500">No certificates registered yet.</td></tr>`;
+                return;
+            }
+
+            certs.forEach(cert => {
+                tbody.innerHTML += `
+                    <tr class="hover:bg-slate-750">
+                        <td class="py-3 px-4 font-mono font-bold text-amber-400 text-xs">${cert.cert_number}</td>
+                        <td class="py-3 px-4 font-bold text-white">${cert.student_name}</td>
+                        <td class="py-3 px-4 text-indigo-300 text-xs font-medium">${cert.course_name}</td>
+                        <td class="py-3 px-4 text-xs text-slate-400">${cert.issue_date}</td>
+                        <td class="py-3 px-4 text-xs font-semibold text-emerald-400">${cert.grade_percentage}</td>
+                        <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/20 text-emerald-300">${cert.verification_status}</span></td>
+                        <td class="py-3 px-4 text-right space-x-2">
+                            <a href="/verify?id=${encodeURIComponent(cert.cert_number)}" target="_blank" class="p-1.5 bg-slate-700 hover:bg-slate-600 text-emerald-400 rounded-lg text-xs inline-block" title="Verify Online">
+                                <i class="fa-solid fa-eye"></i>
+                            </a>
+                            <button onclick="deleteCertificate(${cert.id})" class="p-1.5 bg-red-950/50 hover:bg-red-900/60 text-red-400 rounded-lg text-xs" title="Delete">
+                                <i class="fa-solid fa-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function openNewCertModal() {
+            document.getElementById("certId").value = "";
+            document.getElementById("certModalTitle").innerText = "Issue New Student Certificate";
+            document.getElementById("certNumber").value = "CCI-2026-" + Math.floor(1000 + Math.random() * 9000);
+            document.getElementById("certStudentName").value = "";
+            document.getElementById("certCourseName").value = "";
+            document.getElementById("certIssueDate").value = new Date().toISOString().split('T')[0];
+            document.getElementById("certModal").classList.remove("hidden");
+        }
+
+        async function saveCertificate(e) {
+            e.preventDefault();
+            const payload = {
+                cert_number: document.getElementById("certNumber").value,
+                student_name: document.getElementById("certStudentName").value,
+                course_name: document.getElementById("certCourseName").value,
+                duration: document.getElementById("certDuration").value,
+                issue_date: document.getElementById("certIssueDate").value,
+                grade_percentage: document.getElementById("certGrade").value,
+                remarks: document.getElementById("certRemarks").value
+            };
+
+            const res = await fetch("/api/admin/certificates", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${authToken}` },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                closeModal("certModal");
+                loadCertificates();
+                loadDashboard();
+            } else {
+                const err = await res.json();
+                alert(err.detail || "Error saving certificate");
+            }
+        }
+
+        async function deleteCertificate(id) {
+            if (!confirm("Are you sure you want to delete this certificate record?")) return;
+            await fetch(`/api/admin/certificates/${id}`, {
+                method: "DELETE",
+                headers: { "Authorization": `Bearer ${authToken}` }
+            });
+            loadCertificates();
+            loadDashboard();
+        }
+
+        // ================= COURSES =================
+
+        async function loadCourses() {
+            try {
+                const res = await fetch("/api/admin/courses", { headers: { "Authorization": `Bearer ${authToken}` } });
+                const courses = await res.json();
+
+                const grid = document.getElementById("coursesGrid");
+                grid.innerHTML = "";
+                if (courses.length === 0) {
+                    grid.innerHTML = `<div class="col-span-3 text-center py-8 text-slate-500">No courses added yet.</div>`;
+                    return;
+                }
+
+                courses.forEach(c => {
+                    grid.innerHTML += `
+                        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 flex flex-col justify-between hover:border-brand-500/50 transition">
+                            <div>
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="px-2.5 py-0.5 bg-brand-500/20 text-brand-300 text-xs font-bold rounded-lg">${c.category}</span>
+                                    <span class="text-xs text-slate-400 font-mono"><i class="fa-solid fa-clock mr-1"></i>${c.duration}</span>
+                                </div>
+                                <h4 class="text-base font-bold text-white mb-1">${c.title}</h4>
+                                <p class="text-xs text-slate-400 mb-3">${c.description || 'No description provided.'}</p>
+                                ${c.syllabus ? `<div class="text-[11px] text-slate-300 bg-slate-900/60 p-2 rounded-xl mb-3"><strong class="text-brand-400">Syllabus:</strong> ${c.syllabus}</div>` : ''}
+                            </div>
+                            <div class="flex items-center justify-between pt-3 border-t border-slate-700/60">
+                                <span class="text-sm font-bold text-emerald-400">${c.fee || 'Contact for fee'}</span>
+                                <button onclick="deleteCourse(${c.id})" class="text-red-400 hover:text-red-300 text-xs font-semibold">
+                                    <i class="fa-solid fa-trash mr-1"></i> Delete
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function openNewCourseModal() {
+            document.getElementById("courseTitle").value = "";
+            document.getElementById("courseCategory").value = "Software & IT";
+            document.getElementById("courseDuration").value = "3 Months";
+            document.getElementById("courseFee").value = "";
+            document.getElementById("courseDesc").value = "";
+            document.getElementById("courseSyllabus").value = "";
+            document.getElementById("courseModal").classList.remove("hidden");
+        }
+
+        async function saveCourse(e) {
+            e.preventDefault();
+            const payload = {
+                title: document.getElementById("courseTitle").value,
+                category: document.getElementById("courseCategory").value,
+                duration: document.getElementById("courseDuration").value,
+                fee: document.getElementById("courseFee").value,
+                description: document.getElementById("courseDesc").value,
+                syllabus: document.getElementById("courseSyllabus").value,
+                is_active: 1
+            };
+
+            await fetch("/api/admin/courses", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${authToken}` },
+                body: JSON.stringify(payload)
+            });
+
+            closeModal("courseModal");
+            loadCourses();
+            loadDashboard();
+        }
+
+        async function deleteCourse(id) {
+            if (!confirm("Are you sure you want to delete this course?")) return;
+            await fetch(`/api/admin/courses/${id}`, {
+                method: "DELETE",
+                headers: { "Authorization": `Bearer ${authToken}` }
+            });
+            loadCourses();
+            loadDashboard();
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.add("hidden");
+        }
+    </script>
+</body>
+</html>
+"""
+VERIFY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificate Verification - CCI Skill Academy</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                            900: '#312e81',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @media print {
+            body { background: white; color: black; }
+            .no-print { display: none !important; }
+            #certCard { border: 2px solid #333; box-shadow: none; }
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col justify-between">
+
+    <!-- HEADER -->
+    <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 py-4 no-print">
+        <div class="max-w-5xl mx-auto px-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-brand-600 rounded-xl flex items-center justify-center text-white shadow-md shadow-brand-500/20">
+                    <i class="fa-solid fa-graduation-cap text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="text-base font-bold text-white leading-tight">CCI Skill Academy</h1>
+                    <p class="text-xs text-slate-400">Career Connext International Skill Academy</p>
+                </div>
+            </div>
+            <a href="https://www.cciskillacademy.com" target="_blank" class="text-xs text-slate-300 hover:text-white bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-lg transition">
+                <i class="fa-solid fa-arrow-left mr-1"></i> Back to Main Website
+            </a>
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main class="max-w-3xl mx-auto px-4 py-10 w-full flex-1">
+        
+        <!-- Search Box -->
+        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl mb-8 no-print">
+            <div class="text-center mb-6">
+                <div class="inline-flex p-3 bg-emerald-500/10 text-emerald-400 rounded-2xl mb-3">
+                    <i class="fa-solid fa-certificate text-3xl"></i>
+                </div>
+                <h2 class="text-2xl font-extrabold text-white">Online Certificate Verification</h2>
+                <p class="text-xs sm:text-sm text-slate-400 mt-1">Verify credentials, courses, and student authenticity issued by CCI Skill Academy</p>
+            </div>
+
+            <form onsubmit="handleSearch(event)" class="flex flex-col sm:flex-row gap-3">
+                <div class="relative flex-1">
+                    <i class="fa-solid fa-barcode absolute left-3.5 top-3.5 text-slate-400"></i>
+                    <input type="text" id="certInput" required placeholder="Enter Certificate Number (e.g. CCI-2025-0101)"
+                        class="w-full bg-slate-950 border border-slate-700 rounded-xl pl-10 pr-4 py-3 text-sm text-white uppercase tracking-wider focus:outline-none focus:border-brand-500">
+                </div>
+                <button type="submit" id="searchBtn"
+                    class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-6 py-3 rounded-xl transition shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-shield-halved"></i>
+                    <span>Verify Now</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- RESULT CONTAINER -->
+        <div id="resultBox" class="hidden">
+            <!-- NOT FOUND STATE -->
+            <div id="notFoundCard" class="hidden bg-red-950/40 border border-red-800/60 p-6 rounded-2xl text-center">
+                <div class="w-12 h-12 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center mx-auto mb-3 text-xl">
+                    <i class="fa-solid fa-circle-xmark"></i>
+                </div>
+                <h3 class="text-lg font-bold text-white mb-1">Certificate Not Found</h3>
+                <p id="notResultMessage" class="text-xs text-slate-300 max-w-md mx-auto"></p>
+            </div>
+
+            <!-- SUCCESS VERIFIED CARD -->
+            <div id="certCard" class="hidden bg-slate-900 border-2 border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
+                <!-- Top Badge -->
+                <div class="flex items-center justify-between border-b border-slate-800 pb-4 mb-6">
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 bg-emerald-500 rounded-full animate-pulse"></span>
+                        <span class="text-xs font-bold text-emerald-400 tracking-wider uppercase">Authentic & Verified Record</span>
+                    </div>
+                    <span class="text-xs text-slate-400 font-mono" id="displayVerifiedDate"></span>
+                </div>
+
+                <div class="text-center my-4">
+                    <p class="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-1">This is to certify that</p>
+                    <h3 id="displayStudentName" class="text-2xl sm:text-3xl font-extrabold text-white text-emerald-300 mb-2"></h3>
+                    <p class="text-xs text-slate-400">has successfully completed the prescribed course of study in</p>
+                    <h4 id="displayCourseName" class="text-lg sm:text-xl font-bold text-brand-400 mt-2 mb-4"></h4>
+                </div>
+
+                <!-- Info Grid -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950/70 p-4 rounded-2xl border border-slate-800 my-6 text-center">
+                    <div>
+                        <span class="text-[10px] text-slate-400 uppercase font-semibold block">Certificate ID</span>
+                        <span id="displayCertNo" class="font-mono text-xs sm:text-sm font-bold text-amber-400"></span>
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 uppercase font-semibold block">Duration</span>
+                        <span id="displayDuration" class="text-xs sm:text-sm font-semibold text-white"></span>
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 uppercase font-semibold block">Issue Date</span>
+                        <span id="displayIssueDate" class="text-xs sm:text-sm font-semibold text-white"></span>
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 uppercase font-semibold block">Grade / Class</span>
+                        <span id="displayGrade" class="text-xs sm:text-sm font-bold text-emerald-400"></span>
+                    </div>
+                </div>
+
+                <!-- Footer remarks & signature info -->
+                <div class="border-t border-slate-800 pt-4 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-4">
+                    <div>
+                        <span class="font-semibold text-slate-300">Issued by:</span> Career Connext International Skill Academy
+                        <div class="text-[11px] text-slate-500">Mecheri, Salem, Tamil Nadu, India</div>
+                    </div>
+                    <div class="no-print">
+                        <button onclick="window.print()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl border border-slate-700 font-medium transition flex items-center gap-2">
+                            <i class="fa-solid fa-print"></i> Print / Save Record
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="border-t border-slate-800 py-6 text-center text-xs text-slate-500 no-print">
+        <p>Career Connext International Skill Academy (CCI Skill Academy) &copy; 2026. All Rights Reserved.</p>
+        <p class="mt-1 text-[11px]">Official Verification Portal for www.cciskillacademy.com</p>
+    </footer>
+
+    <!-- SCRIPT -->
+    <script>
+        window.addEventListener("DOMContentLoaded", () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const id = urlParams.get('id');
+            if (id) {
+                document.getElementById("certInput").value = id;
+                verifyCert(id);
+            }
+        });
+
+        function handleSearch(e) {
+            e.preventDefault();
+            const id = document.getElementById("certInput").value.trim();
+            if (id) verifyCert(id);
+        }
+
+        async function verifyCert(certNo) {
+            const resultBox = document.getElementById("resultBox");
+            const notFoundCard = document.getElementById("notFoundCard");
+            const certCard = document.getElementById("certCard");
+            const notResultMessage = document.getElementById("notResultMessage");
+
+            resultBox.classList.remove("hidden");
+            notFoundCard.classList.add("hidden");
+            certCard.classList.add("hidden");
+
+            try {
+                const res = await fetch(`/api/certificates/verify/${encodeURIComponent(certNo)}`);
+                const data = await res.json();
+
+                if (data.verified && data.data) {
+                    const c = data.data;
+                    document.getElementById("displayStudentName").innerText = c.student_name;
+                    document.getElementById("displayCourseName").innerText = c.course_name;
+                    document.getElementById("displayCertNo").innerText = c.cert_number;
+                    document.getElementById("displayDuration").innerText = c.duration || "Course Completed";
+                    document.getElementById("displayIssueDate").innerText = c.issue_date;
+                    document.getElementById("displayGrade").innerText = c.grade_percentage || "Pass";
+                    document.getElementById("displayVerifiedDate").innerText = "Verified on: " + data.verified_at;
+
+                    certCard.classList.remove("hidden");
+                } else {
+                    notResultMessage.innerText = data.message || `No certificate record found matching '${certNo}'.`;
+                    notFoundCard.classList.remove("hidden");
+                }
+            } catch (err) {
+                notResultMessage.innerText = "Error communicating with the verification database.";
+                notFoundCard.classList.remove("hidden");
+            }
+        }
+    </script>
+</body>
+</html>
+"""
 
 # Simple secure token store for Admin sessions
 ACTIVE_TOKENS = {}
@@ -101,7 +1133,6 @@ def verify_admin_token(authorization: Optional[str] = Header(None)):
     
     token = authorization.replace("Bearer ", "").strip()
     if token not in ACTIVE_TOKENS:
-        # Also allow a master session fallback for easy local dashboard integration
         if token != "cci-master-admin-session-token":
             raise HTTPException(status_code=401, detail="Invalid or expired session token")
     return token
@@ -388,73 +1419,12 @@ def delete_course(course_id: int, token: str = Depends(verify_admin_token)):
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CCI Skill Academy - Backend Server</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    </head>
-    <body class="bg-slate-900 text-slate-100 flex items-center justify-center min-h-screen p-4 font-sans">
-        <div class="max-w-xl w-full bg-slate-800 border border-slate-700 rounded-2xl p-8 shadow-2xl text-center">
-            <div class="inline-flex p-4 bg-emerald-500/10 text-emerald-400 rounded-full mb-4">
-                <i class="fa-solid fa-server text-4xl"></i>
-            </div>
-            <h1 class="text-3xl font-extrabold text-white mb-2">CCI Skill Academy</h1>
-            <p class="text-slate-400 mb-6">Backend API & Management Server is running smoothly.</p>
-            
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 my-6 text-left">
-                <a href="/admin" class="flex items-center p-4 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-xl transition group">
-                    <i class="fa-solid fa-gauge-high text-2xl text-indigo-400 mr-3 group-hover:scale-110 transition"></i>
-                    <div>
-                        <div class="font-bold text-white">Admin Dashboard</div>
-                        <div class="text-xs text-slate-400">Manage Leads & Certs</div>
-                    </div>
-                </a>
-                <a href="/verify" class="flex items-center p-4 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-xl transition group">
-                    <i class="fa-solid fa-certificate text-2xl text-emerald-400 mr-3 group-hover:scale-110 transition"></i>
-                    <div>
-                        <div class="font-bold text-white">Verify Certificate</div>
-                        <div class="text-xs text-slate-400">Student & Employer portal</div>
-                    </div>
-                </a>
-                <a href="/docs" target="_blank" class="flex items-center p-4 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-xl transition group">
-                    <i class="fa-solid fa-code text-2xl text-amber-400 mr-3 group-hover:scale-110 transition"></i>
-                    <div>
-                        <div class="font-bold text-white">Interactive API Docs</div>
-                        <div class="text-xs text-slate-400">Swagger REST Documentation</div>
-                    </div>
-                </a>
-                <a href="https://www.cciskillacademy.com" target="_blank" class="flex items-center p-4 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-xl transition group">
-                    <i class="fa-solid fa-globe text-2xl text-sky-400 mr-3 group-hover:scale-110 transition"></i>
-                    <div>
-                        <div class="font-bold text-white">Official Website</div>
-                        <div class="text-xs text-slate-400">cciskillacademy.com</div>
-                    </div>
-                </a>
-            </div>
-            
-            <p class="text-xs text-slate-500">Career Connext International Skill Academy &copy; 2026</p>
-        </div>
-    </body>
-    </html>
-    """
+    return ADMIN_HTML
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request):
-    admin_file = os.path.join(TEMPLATES_DIR, "admin", "index.html")
-    if os.path.exists(admin_file):
-        with open(admin_file, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>Admin Dashboard loading... Please refresh.</h1>"
+def admin_page():
+    return ADMIN_HTML
 
 @app.get("/verify", response_class=HTMLResponse)
-def verify_page(request: Request):
-    verify_file = os.path.join(TEMPLATES_DIR, "verify", "index.html")
-    if os.path.exists(verify_file):
-        with open(verify_file, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>Certificate Verification Page loading...</h1>"
+def verify_page():
+    return VERIFY_HTML
