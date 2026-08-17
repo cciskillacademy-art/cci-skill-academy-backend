@@ -1,0 +1,16 @@
+# Python virtual environments & bytecode
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local database (optional, can keep seed db or ignore)
+*.sqlite3
+
+# IDE / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
