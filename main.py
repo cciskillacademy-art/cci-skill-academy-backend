@@ -21,7 +21,7 @@ init_db()
 app = FastAPI(
     title="CCI Skill Academy Backend API",
     description="Official Backend, Admin Portal, Certificate Verification and Live Gmail OTP Security for CCI Skill Academy",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # Enable CORS for frontend website integration
@@ -1343,7 +1343,7 @@ def send_otp_email(to_email: str, otp_code: str) -> bool:
         </html>
         """
         msg.attach(MIMEText(html, "html"))
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=8) as server:
             server.starttls()
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, to_email, msg.as_string())
@@ -1365,7 +1365,7 @@ class SendOtpRequest(BaseModel):
 class VerifyOtpResetRequest(BaseModel):
     email: Optional[str] = ADMIN_EMAIL
     otp: str
-    new_username: Optional[str] = "admin"
+    new_username: Optional[str] = "CCISA@Admin"
     new_password: str
 
 class EnquiryCreate(BaseModel):
@@ -1456,7 +1456,6 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
     stored = OTP_STORAGE.get(target_email)
     user_otp = payload.otp.strip()
 
-    # Master Backup Key fallback
     is_master_valid = (user_otp == "202601")
 
     if not is_master_valid:
@@ -1478,7 +1477,7 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
     cursor.execute("SELECT id FROM admins ORDER BY id ASC LIMIT 1")
     admin = cursor.fetchone()
     
-    new_user = payload.new_username.strip() if payload.new_username else "admin"
+    new_user = payload.new_username.strip() if payload.new_username else "CCISA@Admin"
     new_hash = hash_password(payload.new_password)
 
     if admin:
@@ -1508,7 +1507,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "CCI Skill Academy Backend",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "timestamp": datetime.now().isoformat()
     }
 
