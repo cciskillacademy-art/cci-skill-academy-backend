@@ -1,6 +1,10 @@
 import os
+import random
+import time
 import secrets
-import sqlite3
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
 from datetime import datetime
 
@@ -16,8 +20,8 @@ init_db()
 
 app = FastAPI(
     title="CCI Skill Academy Backend API",
-    description="Official Backend, Admin Portal and Certificate Verification System for CCI Skill Academy",
-    version="1.0.0"
+    description="Official Backend, Admin Portal, Certificate Verification and OTP Security for CCI Skill Academy",
+    version="1.2.0"
 )
 
 # Enable CORS for frontend website integration
@@ -100,6 +104,65 @@ ADMIN_HTML = """<!DOCTYPE html>
                     class="w-full bg-brand-600 hover:bg-brand-500 text-white font-semibold py-3 rounded-xl transition duration-200 shadow-lg shadow-brand-500/25 flex items-center justify-center">
                     <span>Sign In to Dashboard</span>
                 </button>
+                <div class="text-center pt-2">
+                    <button type="button" onclick="openOtpModal()" class="text-xs text-brand-400 hover:text-brand-300 font-semibold hover:underline flex items-center justify-center gap-1.5 mx-auto">
+                        <i class="fa-solid fa-shield-halved text-amber-400"></i> Forgot / Change Password via OTP
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- OTP PASSWORD RESET MODAL -->
+    <div id="otpModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-md p-6 rounded-2xl shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-key text-amber-400"></i> Security OTP Password Reset
+                </h3>
+                <button onclick="closeModal('otpModal')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            
+            <p class="text-xs text-slate-300 mb-4 leading-relaxed">
+                For high security, a 6-digit OTP will be generated for <strong class="text-brand-400">cciskillacademy@gmail.com</strong>.
+            </p>
+
+            <div id="otpAlert" class="hidden p-3 rounded-xl text-xs mb-3 font-medium"></div>
+
+            <!-- Step 1: Send OTP -->
+            <div id="otpStep1" class="space-y-3">
+                <button type="button" onclick="sendOtpCode()" id="sendOtpBtn"
+                    class="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-paper-plane"></i>
+                    <span>Send 6-Digit OTP to cciskillacademy@gmail.com</span>
+                </button>
+            </div>
+
+            <!-- Step 2: Verify & Reset -->
+            <form id="otpStep2" onsubmit="verifyOtpAndReset(event)" class="space-y-3 hidden">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Enter 6-Digit OTP Code *</label>
+                    <input type="text" id="otpInput" required maxlength="6" placeholder="e.g. 748291"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center text-base font-bold font-mono tracking-widest text-amber-400 focus:outline-none focus:border-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">New Username</label>
+                    <input type="text" id="otpNewUser" value="admin" required
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">New Password * (Min 6 chars)</label>
+                    <input type="password" id="otpNewPass" required minlength="6" placeholder="Enter new strong password"
+                        class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+                </div>
+
+                <div class="flex justify-end gap-2 pt-2">
+                    <button type="button" onclick="closeModal('otpModal')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">Cancel</button>
+                    <button type="submit" id="resetPassBtn" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5">
+                        <i class="fa-solid fa-lock"></i>
+                        <span>Verify & Change Password</span>
+                    </button>
+                </div>
             </form>
         </div>
     </div>
@@ -120,6 +183,9 @@ ADMIN_HTML = """<!DOCTYPE html>
 
                 <!-- Right Actions -->
                 <div class="flex items-center gap-3">
+                    <button onclick="openOtpModal()" class="hidden sm:inline-flex items-center gap-1.5 text-xs text-amber-300 hover:text-amber-200 bg-amber-950/40 hover:bg-amber-900/40 px-3 py-1.5 rounded-lg border border-amber-800/50 transition">
+                        <i class="fa-solid fa-key"></i> Change Password
+                    </button>
                     <a href="/verify" target="_blank" class="hidden sm:inline-flex items-center gap-2 text-xs text-slate-300 hover:text-white bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-600 transition">
                         <i class="fa-solid fa-external-link text-emerald-400"></i> Open Verify Portal
                     </a>
@@ -529,6 +595,84 @@ ADMIN_HTML = """<!DOCTYPE html>
             checkAuth();
             loadDashboard();
         });
+
+        // ================= SECURITY OTP PASSWORD RESET =================
+        function openOtpModal() {
+            document.getElementById("otpAlert").classList.add("hidden");
+            document.getElementById("otpStep1").classList.remove("hidden");
+            document.getElementById("otpStep2").classList.add("hidden");
+            document.getElementById("otpInput").value = "";
+            document.getElementById("otpNewPass").value = "";
+            document.getElementById("otpModal").classList.remove("hidden");
+        }
+
+        async function sendOtpCode() {
+            const btn = document.getElementById("sendOtpBtn");
+            const alertBox = document.getElementById("otpAlert");
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Generating & Sending OTP...</span>`;
+
+            try {
+                const res = await fetch("/api/auth/send-otp", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email: "cciskillacademy@gmail.com" })
+                });
+                const data = await res.json();
+
+                alertBox.className = "p-3 rounded-xl text-xs mb-3 font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 block";
+                alertBox.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> ${data.message || "OTP Sent to cciskillacademy@gmail.com"}`;
+                
+                document.getElementById("otpStep1").classList.add("hidden");
+                document.getElementById("otpStep2").classList.remove("hidden");
+            } catch (err) {
+                alertBox.className = "p-3 rounded-xl text-xs mb-3 font-semibold bg-red-500/20 text-red-300 border border-red-500/40 block";
+                alertBox.innerText = "Error sending OTP. Please try again.";
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-paper-plane"></i> <span>Send 6-Digit OTP to cciskillacademy@gmail.com</span>`;
+            }
+        }
+
+        async function verifyOtpAndReset(e) {
+            e.preventDefault();
+            const btn = document.getElementById("resetPassBtn");
+            const alertBox = document.getElementById("otpAlert");
+            const otp = document.getElementById("otpInput").value.trim();
+            const new_username = document.getElementById("otpNewUser").value.trim();
+            const new_password = document.getElementById("otpNewPass").value;
+
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying...</span>`;
+
+            try {
+                const res = await fetch("/api/auth/verify-otp-and-reset", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ otp, new_username, new_password })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    alertBox.className = "p-3 rounded-xl text-xs mb-3 font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 block";
+                    alertBox.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> ${data.message}`;
+                    setTimeout(() => {
+                        closeModal("otpModal");
+                        logout();
+                        alert("Password successfully changed! Please sign in with your new password.");
+                    }, 1500);
+                } else {
+                    alertBox.className = "p-3 rounded-xl text-xs mb-3 font-semibold bg-red-500/20 text-red-300 border border-red-500/40 block";
+                    alertBox.innerText = data.detail || "Invalid OTP code";
+                }
+            } catch (err) {
+                alertBox.className = "p-3 rounded-xl text-xs mb-3 font-semibold bg-red-500/20 text-red-300 border border-red-500/40 block";
+                alertBox.innerText = "Error verifying OTP";
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-lock"></i> <span>Verify & Change Password</span>`;
+            }
+        }
 
         function openNewEnquiryModal() {
             document.getElementById("manualEnqName").value = "";
@@ -1152,13 +1296,64 @@ VERIFY_HTML = """<!DOCTYPE html>
 </html>
 """
 
-# Simple secure token store for Admin sessions
+ADMIN_EMAIL = "cciskillacademy@gmail.com"
 ACTIVE_TOKENS = {}
+OTP_STORAGE = {}  # {email: {"otp": "123456", "expires_at": timestamp}}
+
+# ----------------- EMAIL OTP SENDER FUNCTION -----------------
+def send_otp_email(to_email: str, otp_code: str) -> bool:
+    smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", 587))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+
+    if smtp_user and smtp_pass:
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"CCI Skill Academy - Your Security OTP: {otp_code}"
+            msg["From"] = f"CCI Skill Academy Security <{smtp_user}>"
+            msg["To"] = to_email
+
+            html = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <h2 style="color: #4f46e5; margin: 0;">CCI Skill Academy</h2>
+                    <p style="color: #64748b; font-size: 13px; margin: 5px 0;">Career Connext International Skill Academy</p>
+                </div>
+                <div style="background: #f8fafc; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+                    <p style="font-size: 14px; color: #334155; margin: 0 0 10px 0;">Your One-Time Password (OTP) to change/reset Admin Password is:</p>
+                    <div style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #4f46e5; margin: 10px 0;">{otp_code}</div>
+                    <p style="font-size: 12px; color: #ef4444; margin: 10px 0 0 0;">This OTP is valid for 10 minutes only. Never share this code with anyone.</p>
+                </div>
+                <p style="font-size: 12px; color: #94a3b8; text-align: center;">If you did not request this, please ignore this email.</p>
+            </div>
+            """
+            msg.attach(MIMEText(html, "html"))
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, to_email, msg.as_string())
+            print(f"[+] Real OTP Email sent to {to_email}")
+            return True
+        except Exception as e:
+            print(f"[-] SMTP sending failed: {e}")
+    
+    print(f"[*] [SECURITY OTP GENERATED FOR {to_email}]: {otp_code}")
+    return True
+
 
 # ----------------- PYDANTIC SCHEMAS -----------------
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class SendOtpRequest(BaseModel):
+    email: Optional[str] = ADMIN_EMAIL
+
+class VerifyOtpResetRequest(BaseModel):
+    otp: str
+    new_username: Optional[str] = "admin"
+    new_password: str
 
 class EnquiryCreate(BaseModel):
     full_name: str
@@ -1216,9 +1411,73 @@ def verify_admin_token(authorization: Optional[str] = Header(None)):
     
     token = authorization.replace("Bearer ", "").strip()
     if token not in ACTIVE_TOKENS:
-        if token != "cci-master-admin-session-token":
-            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        raise HTTPException(status_code=401, detail="Invalid or expired session. Please sign in.")
     return token
+
+
+# =========================================================
+#                   SECURITY & OTP ROUTES
+# =========================================================
+
+@app.post("/api/auth/send-otp")
+def send_otp_route(payload: SendOtpRequest):
+    otp_code = str(random.randint(100000, 999999))
+    expires_at = time.time() + 600
+
+    target_email = payload.email.strip() if payload.email else ADMIN_EMAIL
+    OTP_STORAGE[target_email.lower()] = {
+        "otp": otp_code,
+        "expires_at": expires_at
+    }
+
+    send_otp_email(target_email, otp_code)
+
+    return {
+        "success": True,
+        "message": f"6-digit Security OTP has been generated for {target_email}."
+    }
+
+@app.post("/api/auth/verify-otp-and-reset")
+def verify_otp_and_reset(payload: VerifyOtpResetRequest):
+    target_email = ADMIN_EMAIL.lower()
+    stored = OTP_STORAGE.get(target_email)
+
+    if not stored:
+        raise HTTPException(status_code=400, detail="No active OTP found. Please click 'Send OTP' first.")
+
+    if time.time() > stored["expires_at"]:
+        del OTP_STORAGE[target_email]
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
+
+    if stored["otp"] != payload.otp.strip():
+        raise HTTPException(status_code=400, detail="Invalid OTP code. Please enter the correct 6-digit OTP.")
+
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM admins ORDER BY id ASC LIMIT 1")
+    admin = cursor.fetchone()
+    
+    new_user = payload.new_username.strip() if payload.new_username else "admin"
+    new_hash = hash_password(payload.new_password)
+
+    if admin:
+        cursor.execute("UPDATE admins SET username = ?, password_hash = ? WHERE id = ?", (new_user, new_hash, admin["id"]))
+    else:
+        cursor.execute("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')", (new_user, new_hash))
+    
+    conn.commit()
+    conn.close()
+
+    del OTP_STORAGE[target_email]
+    ACTIVE_TOKENS.clear()
+
+    return {
+        "success": True,
+        "message": f"Password changed successfully! You can now sign in with your new credentials."
+    }
 
 
 # =========================================================
@@ -1230,15 +1489,15 @@ def health_check():
     return {
         "status": "healthy",
         "service": "CCI Skill Academy Backend",
+        "version": "1.2.0",
         "timestamp": datetime.now().isoformat()
     }
 
-# 1. Admin Login Endpoint
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, password_hash, role FROM admins WHERE username = ?", (payload.username,))
+    cursor.execute("SELECT id, username, password_hash, role FROM admins WHERE username = ?", (payload.username.strip(),))
     admin = cursor.fetchone()
     conn.close()
 
@@ -1259,7 +1518,6 @@ def login(payload: LoginRequest):
         "role": admin["role"]
     }
 
-# 2. Public Enquiry Submission (for Website Contact/Admission form)
 @app.post("/api/enquiries")
 def submit_enquiry(data: EnquiryCreate):
     conn = get_db()
@@ -1278,7 +1536,6 @@ def submit_enquiry(data: EnquiryCreate):
         "enquiry_id": enquiry_id
     }
 
-# 3. Public Course Catalog
 @app.get("/api/courses")
 def get_public_courses():
     conn = get_db()
@@ -1288,7 +1545,6 @@ def get_public_courses():
     conn.close()
     return [dict(row) for row in rows]
 
-# 4. Public Certificate Verification (Check by Certificate ID)
 @app.get("/api/certificates/verify/{cert_number}")
 def verify_certificate(cert_number: str):
     conn = get_db()
@@ -1316,7 +1572,6 @@ def verify_certificate(cert_number: str):
 #                 ADMIN MANAGEMENT ROUTES
 # =========================================================
 
-# 1. Dashboard Overview Stats
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(token: str = Depends(verify_admin_token)):
     conn = get_db()
@@ -1349,7 +1604,6 @@ def get_dashboard_stats(token: str = Depends(verify_admin_token)):
         "recent_enquiries": recent_enquiries
     }
 
-# 2. Enquiries Management
 @app.get("/api/admin/enquiries")
 def list_enquiries(status: Optional[str] = None, token: str = Depends(verify_admin_token)):
     conn = get_db()
@@ -1393,8 +1647,6 @@ def delete_enquiry(enquiry_id: int, token: str = Depends(verify_admin_token)):
     conn.close()
     return {"success": True, "message": "Enquiry deleted"}
 
-
-# 3. Certificates Management
 @app.get("/api/admin/certificates")
 def list_certificates(token: str = Depends(verify_admin_token)):
     conn = get_db()
@@ -1446,8 +1698,6 @@ def delete_certificate(cert_id: int, token: str = Depends(verify_admin_token)):
     conn.close()
     return {"success": True, "message": "Certificate deleted"}
 
-
-# 4. Courses Management
 @app.get("/api/admin/courses")
 def list_all_courses(token: str = Depends(verify_admin_token)):
     conn = get_db()
