@@ -54,9 +54,9 @@ def restore_certificates_from_json():
                 cursor = conn.cursor()
                 for c in data:
                     cursor.execute("""
-                        INSERT OR IGNORE INTO certificates (cert_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (c["cert_number"], c["student_name"], c["course_name"], c.get("duration", "3 Months"), c["issue_date"], c.get("grade_percentage", "First Class"), c.get("verification_status", "Valid"), c.get("remarks", "Verified and issued by Career Connext International Skill Academy.")))
+                        INSERT OR IGNORE INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (c["cert_number"], c.get("roll_number", c["cert_number"].replace('CCI-', 'REG-')), c["student_name"], c["course_name"], c.get("duration", "3 Months"), c["issue_date"], c.get("grade_percentage", "First Class"), c.get("verification_status", "Valid"), c.get("remarks", "Verified and issued by Career Connext International Skill Academy.")))
                 conn.commit()
                 conn.close()
         except Exception as e:
@@ -94,6 +94,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS certificates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         cert_number TEXT UNIQUE NOT NULL,
+        roll_number TEXT,
         student_name TEXT NOT NULL,
         course_name TEXT NOT NULL,
         duration TEXT DEFAULT '3 Months',
@@ -104,6 +105,12 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    # Auto-migrate table if roll_number column is missing
+    try:
+        cursor.execute("ALTER TABLE certificates ADD COLUMN roll_number TEXT")
+    except Exception:
+        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS courses (
@@ -149,8 +156,8 @@ def init_db():
     cursor.execute("SELECT COUNT(*) as count FROM certificates")
     if cursor.fetchone()["count"] == 0:
         cursor.execute("""
-            INSERT INTO certificates (cert_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
-            VALUES ('CCI-2025-0101', 'Karthik R', 'Full Stack Web Development', '3 Months', '2025-01-15', 'Distinction (A+)', 'Valid', 'Verified and issued by Career Connext International Skill Academy.')
+            INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
+            VALUES ('CCI-2025-0101', 'CCISA-2025-01', 'Karthik R', 'Full Stack Web Development', '3 Months', '2025-01-15', 'Distinction (A+)', 'Valid', 'Verified and issued by Career Connext International Skill Academy.')
         """)
 
     conn.commit()
@@ -166,8 +173,8 @@ init_db()
 # =========================================================
 app = FastAPI(
     title="CCI Skill Academy Backend API",
-    description="Official Backend, Admin Portal, Certificate Verification and Live Persistence for CCI Skill Academy",
-    version="3.2.0"
+    description="Official Backend, Admin Portal, Roll Number & Certificate Verification for CCI Skill Academy",
+    version="3.3.0"
 )
 
 app.add_middleware(
@@ -506,6 +513,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                         <thead class="text-xs text-slate-400 uppercase bg-slate-900/80">
                             <tr>
                                 <th class="py-3 px-4">Cert Number</th>
+                                <th class="py-3 px-4">Roll / Reg No</th>
                                 <th class="py-3 px-4">Student Name</th>
                                 <th class="py-3 px-4">Course Name</th>
                                 <th class="py-3 px-4">Issue Date</th>
@@ -550,11 +558,15 @@ ADMIN_HTML = """<!DOCTYPE html>
                 <button onclick="closeModal('certModal')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
             </div>
             <form onsubmit="saveCertificate(event)" class="space-y-3">
-                <input type="hidden" id="certId">
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                         <label class="block text-xs font-semibold text-slate-300 mb-1">Certificate Number *</label>
                         <input type="text" id="certNumber" required placeholder="e.g. CCI-2026-0201"
+                            class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase focus:outline-none focus:border-brand-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">Student Roll / Reg No</label>
+                        <input type="text" id="certRollNumber" placeholder="e.g. CCISA-2026-001"
                             class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase focus:outline-none focus:border-brand-500">
                     </div>
                     <div>
@@ -1066,6 +1078,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             const filtered = allCertificates.filter(c => 
                 c.student_name.toLowerCase().includes(q) || 
                 c.cert_number.toLowerCase().includes(q) || 
+                (c.roll_number && c.roll_number.toLowerCase().includes(q)) ||
                 c.course_name.toLowerCase().includes(q)
             );
             renderCertificatesTable(filtered);
@@ -1075,7 +1088,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             const tbody = document.getElementById("allCertificatesTable");
             tbody.innerHTML = "";
             if (certs.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-slate-500">No certificates registered yet.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" class="py-6 text-center text-slate-500">No certificates registered yet.</td></tr>`;
                 return;
             }
 
@@ -1083,6 +1096,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                 tbody.innerHTML += `
                     <tr class="hover:bg-slate-750">
                         <td class="py-3 px-4 font-mono font-bold text-amber-400 text-xs">${cert.cert_number}</td>
+                        <td class="py-3 px-4 font-mono font-semibold text-sky-400 text-xs">${cert.roll_number || '-'}</td>
                         <td class="py-3 px-4 font-bold text-white">${cert.student_name}</td>
                         <td class="py-3 px-4 text-indigo-300 text-xs font-medium">${cert.course_name}</td>
                         <td class="py-3 px-4 text-xs text-slate-400">${cert.issue_date}</td>
@@ -1102,9 +1116,10 @@ ADMIN_HTML = """<!DOCTYPE html>
         }
 
         function openNewCertModal() {
-            document.getElementById("certId").value = "";
             document.getElementById("certModalTitle").innerText = "Issue New Student Certificate";
-            document.getElementById("certNumber").value = "CCI-2026-" + Math.floor(1000 + Math.random() * 9000);
+            const randomNum = Math.floor(1000 + Math.random() * 9000);
+            document.getElementById("certNumber").value = "CCI-2026-" + randomNum;
+            document.getElementById("certRollNumber").value = "CCISA-" + randomNum;
             document.getElementById("certStudentName").value = "";
             document.getElementById("certCourseName").value = "";
             document.getElementById("certIssueDate").value = new Date().toISOString().split('T')[0];
@@ -1115,6 +1130,7 @@ ADMIN_HTML = """<!DOCTYPE html>
             e.preventDefault();
             const payload = {
                 cert_number: document.getElementById("certNumber").value,
+                roll_number: document.getElementById("certRollNumber").value,
                 student_name: document.getElementById("certStudentName").value,
                 course_name: document.getElementById("certCourseName").value,
                 duration: document.getElementById("certDuration").value,
@@ -1288,7 +1304,7 @@ VERIFY_HTML = """<!DOCTYPE html>
                     <p class="text-xs text-slate-400">Career Connext International Skill Academy</p>
                 </div>
             </div>
-            <a href="https://www.cciskillacademy.com" target="_blank" class="text-xs text-slate-300 hover:text-white bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-lg transition">
+            <a href="https://www.cciskillacademy.com" class="text-xs text-slate-300 hover:text-white bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-lg transition">
                 <i class="fa-solid fa-arrow-left mr-1"></i> Back to Main Website
             </a>
         </div>
@@ -1304,13 +1320,13 @@ VERIFY_HTML = """<!DOCTYPE html>
                     <i class="fa-solid fa-certificate text-3xl"></i>
                 </div>
                 <h2 class="text-2xl font-extrabold text-white">Online Certificate Verification</h2>
-                <p class="text-xs sm:text-sm text-slate-400 mt-1">Verify credentials, courses, and student authenticity issued by CCI Skill Academy</p>
+                <p class="text-xs sm:text-sm text-slate-400 mt-1">Verify student credentials by Certificate Number, Roll Number, or Name</p>
             </div>
 
             <form onsubmit="handleSearch(event)" class="flex flex-col sm:flex-row gap-3">
                 <div class="relative flex-1">
                     <i class="fa-solid fa-barcode absolute left-3.5 top-3.5 text-slate-400"></i>
-                    <input type="text" id="certInput" required placeholder="Enter Certificate Number (e.g. CCI-2025-0101)"
+                    <input type="text" id="certInput" required placeholder="Enter Certificate No or Roll No (e.g. CCI-2026-101 or REG-01)"
                         class="w-full bg-slate-950 border border-slate-700 rounded-xl pl-10 pr-4 py-3 text-sm text-white uppercase tracking-wider focus:outline-none focus:border-brand-500">
                 </div>
                 <button type="submit" id="searchBtn"
@@ -1350,11 +1366,15 @@ VERIFY_HTML = """<!DOCTYPE html>
                     <h4 id="displayCourseName" class="text-lg sm:text-xl font-bold text-brand-400 mt-2 mb-4"></h4>
                 </div>
 
-                <!-- Info Grid -->
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950/70 p-4 rounded-2xl border border-slate-800 my-6 text-center">
+                <!-- Info Grid with Roll Number -->
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 bg-slate-950/70 p-4 rounded-2xl border border-slate-800 my-6 text-center">
                     <div>
                         <span class="text-[10px] text-slate-400 uppercase font-semibold block">Certificate ID</span>
                         <span id="displayCertNo" class="font-mono text-xs sm:text-sm font-bold text-amber-400"></span>
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 uppercase font-semibold block">Roll / Reg No</span>
+                        <span id="displayRollNo" class="font-mono text-xs sm:text-sm font-bold text-sky-400"></span>
                     </div>
                     <div>
                         <span class="text-[10px] text-slate-400 uppercase font-semibold block">Duration</span>
@@ -1384,7 +1404,6 @@ VERIFY_HTML = """<!DOCTYPE html>
                 </div>
             </div>
         </div>
-
     </main>
 
     <!-- FOOTER -->
@@ -1429,6 +1448,7 @@ VERIFY_HTML = """<!DOCTYPE html>
                     document.getElementById("displayStudentName").innerText = c.student_name;
                     document.getElementById("displayCourseName").innerText = c.course_name;
                     document.getElementById("displayCertNo").innerText = c.cert_number;
+                    document.getElementById("displayRollNo").innerText = c.roll_number || c.cert_number.replace('CCI-', 'REG-');
                     document.getElementById("displayDuration").innerText = c.duration || "Course Completed";
                     document.getElementById("displayIssueDate").innerText = c.issue_date;
                     document.getElementById("displayGrade").innerText = c.grade_percentage || "Pass";
@@ -1527,6 +1547,7 @@ class EnquiryUpdate(BaseModel):
 
 class CertificateCreate(BaseModel):
     cert_number: str
+    roll_number: Optional[str] = ""
     student_name: str
     course_name: str
     duration: Optional[str] = "3 Months"
@@ -1536,6 +1557,7 @@ class CertificateCreate(BaseModel):
     remarks: Optional[str] = "Verified and issued by Career Connext International Skill Academy."
 
 class CertificateUpdate(BaseModel):
+    roll_number: Optional[str] = None
     student_name: Optional[str] = None
     course_name: Optional[str] = None
     duration: Optional[str] = None
@@ -1620,7 +1642,7 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "service": "CCI Skill Academy Backend", "version": "3.2.0", "timestamp": datetime.now().isoformat()}
+    return {"status": "healthy", "service": "CCI Skill Academy Backend", "version": "3.3.0", "timestamp": datetime.now().isoformat()}
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
@@ -1679,6 +1701,7 @@ def get_public_courses():
     conn.close()
     return [dict(row) for row in rows]
 
+# SMART SEARCH BY CERT NUMBER OR ROLL NUMBER OR NAME
 @app.get("/api/certificates/verify/{cert_number}")
 def verify_certificate(cert_number: str):
     clean_query = cert_number.strip().upper()
@@ -1687,13 +1710,23 @@ def verify_certificate(cert_number: str):
     conn = get_db()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT * FROM certificates WHERE UPPER(cert_number) = ?", (clean_query,))
+    # 1. Match by exact Certificate Number or Roll Number
+    cursor.execute("""
+        SELECT * FROM certificates 
+        WHERE UPPER(cert_number) = ? OR UPPER(roll_number) = ?
+    """, (clean_query, clean_query))
     cert = cursor.fetchone()
 
+    # 2. Match by stripped Certificate Number or Roll Number
     if not cert:
-        cursor.execute("SELECT * FROM certificates WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ?", (stripped_query,))
+        cursor.execute("""
+            SELECT * FROM certificates 
+            WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ?
+               OR REPLACE(REPLACE(REPLACE(UPPER(roll_number), '-', ''), ' ', ''), '/', '') = ?
+        """, (stripped_query, stripped_query))
         cert = cursor.fetchone()
 
+    # 3. Match by student name
     if not cert and len(clean_query) >= 3:
         cursor.execute("SELECT * FROM certificates WHERE UPPER(student_name) LIKE ?", (f"%{clean_query}%",))
         cert = cursor.fetchone()
@@ -1701,7 +1734,7 @@ def verify_certificate(cert_number: str):
     conn.close()
 
     if not cert:
-        return {"verified": False, "message": f"Certificate '{cert_number}' not found in official registry."}
+        return {"verified": False, "message": f"Certificate or Roll Number '{cert_number}' not found in official registry."}
 
     return {"verified": True, "status": cert["verification_status"], "data": dict(cert), "institute": "Career Connext International Skill Academy", "verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -1775,11 +1808,12 @@ def list_certificates(token: str = Depends(verify_admin_token)):
 def create_certificate(data: CertificateCreate, token: str = Depends(verify_admin_token)):
     conn = get_db()
     cursor = conn.cursor()
+    roll_no = data.roll_number.strip().upper() if data.roll_number else data.cert_number.strip().upper().replace('CCI-', 'REG-')
     try:
         cursor.execute("""
-            INSERT INTO certificates (cert_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (data.cert_number.strip().upper(), data.student_name, data.course_name, data.duration, data.issue_date, data.grade_percentage, data.verification_status, data.remarks))
+            INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (data.cert_number.strip().upper(), roll_no, data.student_name, data.course_name, data.duration, data.issue_date, data.grade_percentage, data.verification_status, data.remarks))
         cert_id = cursor.lastrowid
         conn.commit()
     except sqlite3.IntegrityError:
