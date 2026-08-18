@@ -5,6 +5,7 @@ import secrets
 import smtplib
 import json
 import sqlite3
+import hashlib
 import urllib.request
 import urllib.parse
 from email.mime.text import MIMEText
@@ -17,18 +18,158 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from database import get_db, init_db, hash_password, backup_certificates_to_json
+# =========================================================
+#                 DATABASE ENGINE (SELF-CONTAINED)
+# =========================================================
+DB_FILE = os.path.join(os.path.dirname(__file__), "cci_academy.db")
+BACKUP_FILE = os.path.join(os.path.dirname(__file__), "certificates_backup.json")
 
-# Initialize Database on startup
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+def backup_certificates_to_json():
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM certificates")
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        with open(BACKUP_FILE, "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=2)
+    except Exception as e:
+        print(f"[-] Backup error: {e}")
+
+def restore_certificates_from_json():
+    if os.path.exists(BACKUP_FILE):
+        try:
+            with open(BACKUP_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data and isinstance(data, list):
+                conn = get_db()
+                cursor = conn.cursor()
+                for c in data:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO certificates (cert_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (c["cert_number"], c["student_name"], c["course_name"], c.get("duration", "3 Months"), c["issue_date"], c.get("grade_percentage", "First Class"), c.get("verification_status", "Valid"), c.get("remarks", "Verified and issued by Career Connext International Skill Academy.")))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"[-] Restore error: {e}")
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT DEFAULT 'admin',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS enquiries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        full_name TEXT NOT NULL,
+        mobile TEXT NOT NULL,
+        email TEXT,
+        course_interest TEXT NOT NULL,
+        message TEXT,
+        status TEXT DEFAULT 'New',
+        admin_notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS certificates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cert_number TEXT UNIQUE NOT NULL,
+        student_name TEXT NOT NULL,
+        course_name TEXT NOT NULL,
+        duration TEXT DEFAULT '3 Months',
+        issue_date TEXT NOT NULL,
+        grade_percentage TEXT DEFAULT 'First Class with Distinction',
+        verification_status TEXT DEFAULT 'Valid',
+        remarks TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS courses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        duration TEXT NOT NULL,
+        fee TEXT,
+        description TEXT,
+        syllabus TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # Permanent Admin Setup
+    default_admin_user = "CCISA@Admin"
+    default_admin_pass = "Cci@BTDY0213"
+    admin_hash = hash_password(default_admin_pass)
+
+    cursor.execute("SELECT id FROM admins LIMIT 1")
+    existing_admin = cursor.fetchone()
+    if existing_admin:
+        cursor.execute("UPDATE admins SET username = ?, password_hash = ? WHERE id = ?", (default_admin_user, admin_hash, existing_admin["id"]))
+    else:
+        cursor.execute("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')", (default_admin_user, admin_hash))
+
+    cursor.execute("SELECT COUNT(*) as count FROM courses")
+    if cursor.fetchone()["count"] == 0:
+        courses_data = [
+            ("Full Stack Web Development (MERN / Python)", "Software & IT", "3 Months", "Rs. 15,000", "Master HTML, CSS, JavaScript, React, Node.js / Python and live web app deployment.", "Frontend, Backend, Database, Cloud Deployment, Live Projects"),
+            ("Python Programming & Data Analytics", "Programming", "2 Months", "Rs. 10,000", "Hands-on Python, Pandas, NumPy, SQL, and Data Visualization with PowerBI/Matplotlib.", "Core Python, OOPs, Data Processing, SQL Database, Real-world Projects"),
+            ("Spoken English & Communication Mastery", "Language & Soft Skills", "45 Days", "Rs. 4,500", "Fluent English speaking, accent neutralization, interview preparation and public speaking.", "Grammar Essentials, Daily Conversations, Mock Interviews, Group Discussions"),
+            ("DCA & Tally Prime with GST", "Finance & Office Skills", "2 Months", "Rs. 6,000", "Comprehensive computer application course with MS Office and Tally Prime accounting.", "MS Word, Excel, PowerPoint, Tally Prime, GST Invoicing, E-Way Bill"),
+            ("Graphic Design & Video Editing", "Design & Multimedia", "2 Months", "Rs. 8,000", "Adobe Photoshop, Illustrator, Premiere Pro, and Canva for creative career.", "Logo Design, Social Media Posters, Video Editing, Motion Graphics"),
+            ("Basic Computer Applications & Typing", "Foundational Skills", "1 Month", "Rs. 3,000", "Computer basics, Windows, internet browsing, email writing, and fast English/Tamil typing.", "Keyboard Typing, Operating System, MS Word, Internet & Email")
+        ]
+        cursor.executemany("""
+            INSERT INTO courses (title, category, duration, fee, description, syllabus)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, courses_data)
+
+    cursor.execute("SELECT COUNT(*) as count FROM certificates")
+    if cursor.fetchone()["count"] == 0:
+        cursor.execute("""
+            INSERT INTO certificates (cert_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
+            VALUES ('CCI-2025-0101', 'Karthik R', 'Full Stack Web Development', '3 Months', '2025-01-15', 'Distinction (A+)', 'Valid', 'Verified and issued by Career Connext International Skill Academy.')
+        """)
+
+    conn.commit()
+    conn.close()
+
+    restore_certificates_from_json()
+
+# Run initialization
 init_db()
 
+# =========================================================
+#                 FASTAPI APPLICATION
+# =========================================================
 app = FastAPI(
     title="CCI Skill Academy Backend API",
     description="Official Backend, Admin Portal, Certificate Verification and Live Persistence for CCI Skill Academy",
-    version="3.1.0"
+    version="3.2.0"
 )
 
-# Enable CORS for frontend website integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,7 +178,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Embedded Web Templates
 ADMIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1314,7 +1454,6 @@ ADMIN_WHATSAPP = "919524072944"
 ACTIVE_TOKENS = {}
 OTP_STORAGE = {}
 
-# ----------------- WHATSAPP NOTIFICATION DISPATCHER -----------------
 def send_whatsapp_lead_alert(full_name: str, mobile: str, course: str, message: str = ""):
     try:
         text = f"🔔 *CCI SKILL ACADEMY - NEW ADMISSION LEAD*\n\n👤 *Student:* {full_name}\n📱 *Mobile:* {mobile}\n🎓 *Course:* {course}\n💬 *Query:* {message or 'Website enquiry'}\n⏰ *Time:* {datetime.now().strftime('%d-%m-%Y %I:%M %p')}"
@@ -1322,11 +1461,9 @@ def send_whatsapp_lead_alert(full_name: str, mobile: str, course: str, message: 
         webhook_url = f"https://api.callmebot.com/whatsapp.php?phone={ADMIN_WHATSAPP}&text={encoded_text}&apikey=free"
         req = urllib.request.Request(webhook_url, headers={"User-Agent": "Mozilla/5.0"})
         urllib.request.urlopen(req, timeout=4)
-        print(f"[+] WhatsApp Alert dispatched to {ADMIN_WHATSAPP}")
-    except Exception as e:
-        print(f"[*] WhatsApp alert log recorded for lead: {full_name} ({mobile})")
+    except Exception:
+        pass
 
-# ----------------- LIVE GMAIL OTP SENDER FUNCTION -----------------
 def send_otp_email(to_email: str, otp_code: str) -> bool:
     smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.environ.get("SMTP_PORT", 587))
@@ -1342,19 +1479,14 @@ def send_otp_email(to_email: str, otp_code: str) -> bool:
         html = f"""
         <!DOCTYPE html>
         <html>
-        <head><meta charset="utf-8"></head>
         <body style="font-family: Arial, sans-serif; background-color: #0f172a; margin: 0; padding: 20px;">
             <div style="max-width: 550px; margin: auto; background-color: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 30px; color: #f8fafc; text-align: center;">
-                <div style="margin-bottom: 20px;">
-                    <h2 style="color: #6366f1; margin: 0; font-size: 22px;">🎓 CCI Skill Academy</h2>
-                    <p style="color: #94a3b8; font-size: 13px; margin-top: 4px;">Career Connext International Skill Academy</p>
-                </div>
+                <h2 style="color: #6366f1; margin: 0; font-size: 22px;">🎓 CCI Skill Academy</h2>
                 <div style="background-color: #0f172a; border: 1px solid #4338ca; border-radius: 12px; padding: 25px; margin: 20px 0;">
-                    <p style="font-size: 14px; color: #cbd5e1; margin: 0 0 10px 0;">Your One-Time Password (OTP) to change/reset Admin Password is:</p>
+                    <p style="font-size: 14px; color: #cbd5e1; margin: 0 0 10px 0;">Your One-Time Password (OTP) is:</p>
                     <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #38bdf8; margin: 15px 0;">{otp_code}</div>
-                    <p style="font-size: 12px; color: #f87171; margin: 10px 0 0 0;">⏱️ This OTP is valid for 10 minutes only. Never share this code with anyone.</p>
+                    <p style="font-size: 12px; color: #f87171; margin: 10px 0 0 0;">Valid for 10 minutes only.</p>
                 </div>
-                <p style="font-size: 11px; color: #64748b; margin-top: 20px;">If you did not request a password change, please ignore this email.</p>
             </div>
         </body>
         </html>
@@ -1364,14 +1496,11 @@ def send_otp_email(to_email: str, otp_code: str) -> bool:
             server.starttls()
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, to_email, msg.as_string())
-        print(f"[+] REAL GMAIL OTP DELIVERED TO {to_email}")
         return True
-    except Exception as e:
-        print(f"[-] SMTP sending failed: {e}")
+    except Exception:
         return False
 
-
-# ----------------- PYDANTIC SCHEMAS -----------------
+# Pydantic Schemas
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -1433,58 +1562,39 @@ class CourseUpdate(BaseModel):
     syllabus: Optional[str] = None
     is_active: Optional[int] = None
 
-
-# ----------------- AUTH MIDDLEWARE HELPER -----------------
 def verify_admin_token(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authentication token required")
-    
     token = authorization.replace("Bearer ", "").strip()
     if token not in ACTIVE_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid or expired session. Please sign in.")
     return token
 
-
-# =========================================================
-#                   SECURITY & OTP ROUTES
-# =========================================================
-
+# API Routes
 @app.post("/api/auth/send-otp")
 def send_otp_route(payload: SendOtpRequest):
     otp_code = str(random.randint(100000, 999999))
     expires_at = time.time() + 600
-
     target_email = payload.email.strip().lower() if payload.email else ADMIN_EMAIL.lower()
-    OTP_STORAGE[target_email] = {
-        "otp": otp_code,
-        "expires_at": expires_at
-    }
-
+    OTP_STORAGE[target_email] = {"otp": otp_code, "expires_at": expires_at}
     send_otp_email(target_email, otp_code)
-
-    return {
-        "success": True,
-        "message": f"6-digit Security OTP has been sent to {target_email}."
-    }
+    return {"success": True, "message": f"6-digit Security OTP has been sent to {target_email}."}
 
 @app.post("/api/auth/verify-otp-and-reset")
 def verify_otp_and_reset(payload: VerifyOtpResetRequest):
     target_email = payload.email.strip().lower() if payload.email else ADMIN_EMAIL.lower()
     stored = OTP_STORAGE.get(target_email)
     user_otp = payload.otp.strip()
-
     is_master_valid = (user_otp == "202601")
 
     if not is_master_valid:
         if not stored:
-            raise HTTPException(status_code=400, detail=f"No active OTP found for {target_email}. Please click 'Generate & Send OTP' first.")
-
+            raise HTTPException(status_code=400, detail=f"No active OTP found. Please click 'Generate & Send OTP' first.")
         if time.time() > stored["expires_at"]:
             del OTP_STORAGE[target_email]
             raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
-
         if stored["otp"] != user_otp:
-            raise HTTPException(status_code=400, detail="Invalid OTP code. Please enter the correct 6-digit OTP from your Gmail.")
+            raise HTTPException(status_code=400, detail="Invalid OTP code.")
 
     if len(payload.new_password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
@@ -1493,7 +1603,6 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM admins ORDER BY id ASC LIMIT 1")
     admin = cursor.fetchone()
-    
     new_user = payload.new_username.strip() if payload.new_username else "CCISA@Admin"
     new_hash = hash_password(payload.new_password)
 
@@ -1501,32 +1610,17 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
         cursor.execute("UPDATE admins SET username = ?, password_hash = ? WHERE id = ?", (new_user, new_hash, admin["id"]))
     else:
         cursor.execute("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')", (new_user, new_hash))
-    
     conn.commit()
     conn.close()
 
     if target_email in OTP_STORAGE:
         del OTP_STORAGE[target_email]
     ACTIVE_TOKENS.clear()
-
-    return {
-        "success": True,
-        "message": f"Password changed successfully! You can now sign in with your new credentials."
-    }
-
-
-# =========================================================
-#                   PUBLIC API ROUTES
-# =========================================================
+    return {"success": True, "message": "Password changed successfully!"}
 
 @app.get("/api/health")
 def health_check():
-    return {
-        "status": "healthy",
-        "service": "CCI Skill Academy Backend",
-        "version": "3.1.0",
-        "timestamp": datetime.now().isoformat()
-    }
+    return {"status": "healthy", "service": "CCI Skill Academy Backend", "version": "3.2.0", "timestamp": datetime.now().isoformat()}
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
@@ -1561,39 +1655,20 @@ def login(payload: LoginRequest):
     conn.close()
 
     token = secrets.token_hex(24)
-    ACTIVE_TOKENS[token] = {
-        "username": "CCISA@Admin",
-        "role": "admin",
-        "login_at": datetime.now().isoformat()
-    }
-
-    return {
-        "success": True,
-        "token": token,
-        "username": "CCISA@Admin",
-        "role": "admin"
-    }
+    ACTIVE_TOKENS[token] = {"username": "CCISA@Admin", "role": "admin", "login_at": datetime.now().isoformat()}
+    return {"success": True, "token": token, "username": "CCISA@Admin", "role": "admin"}
 
 @app.post("/api/enquiries")
 def submit_enquiry(data: EnquiryCreate):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO enquiries (full_name, mobile, email, course_interest, message)
-        VALUES (?, ?, ?, ?, ?)
-    """, (data.full_name, data.mobile, data.email, data.course_interest, data.message))
+    cursor.execute("INSERT INTO enquiries (full_name, mobile, email, course_interest, message) VALUES (?, ?, ?, ?, ?)", (data.full_name, data.mobile, data.email, data.course_interest, data.message))
     enquiry_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
     send_whatsapp_lead_alert(data.full_name, data.mobile, data.course_interest, data.message or "")
-
-    return {
-        "success": True,
-        "message": "Thank you for reaching out to CCI Skill Academy! Our academic counselor will contact you shortly.",
-        "enquiry_id": enquiry_id,
-        "whatsapp_counselor_link": f"https://wa.me/{ADMIN_WHATSAPP}?text=Hi%20CCI%20Skill%20Academy,%20my%20name%20is%20{urllib.parse.quote(data.full_name)}.%20I%20am%20interested%20in%20{urllib.parse.quote(data.course_interest)}."
-    }
+    return {"success": True, "message": "Thank you! Enquiry received.", "enquiry_id": enquiry_id}
 
 @app.get("/api/courses")
 def get_public_courses():
@@ -1604,7 +1679,6 @@ def get_public_courses():
     conn.close()
     return [dict(row) for row in rows]
 
-# SMART & FLEXIBLE CERTIFICATE VERIFICATION
 @app.get("/api/certificates/verify/{cert_number}")
 def verify_certificate(cert_number: str):
     clean_query = cert_number.strip().upper()
@@ -1613,19 +1687,13 @@ def verify_certificate(cert_number: str):
     conn = get_db()
     cursor = conn.cursor()
     
-    # 1. Try exact match
     cursor.execute("SELECT * FROM certificates WHERE UPPER(cert_number) = ?", (clean_query,))
     cert = cursor.fetchone()
 
-    # 2. Try flexible stripped match (handles hyphen/space variations)
     if not cert:
-        cursor.execute("""
-            SELECT * FROM certificates 
-            WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ?
-        """, (stripped_query,))
+        cursor.execute("SELECT * FROM certificates WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ?", (stripped_query,))
         cert = cursor.fetchone()
 
-    # 3. Try student name match
     if not cert and len(clean_query) >= 3:
         cursor.execute("SELECT * FROM certificates WHERE UPPER(student_name) LIKE ?", (f"%{clean_query}%",))
         cert = cursor.fetchone()
@@ -1633,55 +1701,27 @@ def verify_certificate(cert_number: str):
     conn.close()
 
     if not cert:
-        return {
-            "verified": False,
-            "message": f"Certificate '{cert_number}' not found in the official registry. Please check the Certificate Number or contact the academy."
-        }
+        return {"verified": False, "message": f"Certificate '{cert_number}' not found in official registry."}
 
-    return {
-        "verified": True,
-        "status": cert["verification_status"],
-        "data": dict(cert),
-        "institute": "Career Connext International Skill Academy (CCI Skill Academy)",
-        "verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
+    return {"verified": True, "status": cert["verification_status"], "data": dict(cert), "institute": "Career Connext International Skill Academy", "verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-
-# =========================================================
-#                 ADMIN MANAGEMENT ROUTES
-# =========================================================
-
+# Admin Routes
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(token: str = Depends(verify_admin_token)):
     conn = get_db()
     cursor = conn.cursor()
-
     cursor.execute("SELECT COUNT(*) as total FROM enquiries")
     total_enquiries = cursor.fetchone()["total"]
-
     cursor.execute("SELECT COUNT(*) as total FROM enquiries WHERE status = 'New'")
     new_enquiries = cursor.fetchone()["total"]
-
     cursor.execute("SELECT COUNT(*) as total FROM certificates")
     total_certificates = cursor.fetchone()["total"]
-
     cursor.execute("SELECT COUNT(*) as total FROM courses WHERE is_active = 1")
     active_courses = cursor.fetchone()["total"]
-
     cursor.execute("SELECT * FROM enquiries ORDER BY id DESC LIMIT 5")
     recent_enquiries = [dict(r) for r in cursor.fetchall()]
-
     conn.close()
-
-    return {
-        "stats": {
-            "total_enquiries": total_enquiries,
-            "new_enquiries": new_enquiries,
-            "total_certificates": total_certificates,
-            "active_courses": active_courses
-        },
-        "recent_enquiries": recent_enquiries
-    }
+    return {"stats": {"total_enquiries": total_enquiries, "new_enquiries": new_enquiries, "total_certificates": total_certificates, "active_courses": active_courses}, "recent_enquiries": recent_enquiries}
 
 @app.get("/api/admin/enquiries")
 def list_enquiries(status: Optional[str] = None, token: str = Depends(verify_admin_token)):
@@ -1699,23 +1739,19 @@ def list_enquiries(status: Optional[str] = None, token: str = Depends(verify_adm
 def update_enquiry(enquiry_id: int, data: EnquiryUpdate, token: str = Depends(verify_admin_token)):
     conn = get_db()
     cursor = conn.cursor()
-    
-    updates = []
-    values = []
+    updates, values = [], []
     if data.status is not None:
         updates.append("status = ?")
         values.append(data.status)
     if data.admin_notes is not None:
         updates.append("admin_notes = ?")
         values.append(data.admin_notes)
-
     if updates:
         values.append(enquiry_id)
         cursor.execute(f"UPDATE enquiries SET {', '.join(updates)} WHERE id = ?", values)
         conn.commit()
-
     conn.close()
-    return {"success": True, "message": "Enquiry updated successfully"}
+    return {"success": True}
 
 @app.delete("/api/admin/enquiries/{enquiry_id}")
 def delete_enquiry(enquiry_id: int, token: str = Depends(verify_admin_token)):
@@ -1724,7 +1760,7 @@ def delete_enquiry(enquiry_id: int, token: str = Depends(verify_admin_token)):
     cursor.execute("DELETE FROM enquiries WHERE id = ?", (enquiry_id,))
     conn.commit()
     conn.close()
-    return {"success": True, "message": "Enquiry deleted"}
+    return {"success": True}
 
 @app.get("/api/admin/certificates")
 def list_certificates(token: str = Depends(verify_admin_token)):
@@ -1751,17 +1787,14 @@ def create_certificate(data: CertificateCreate, token: str = Depends(verify_admi
         raise HTTPException(status_code=400, detail=f"Certificate number '{data.cert_number}' already exists!")
     conn.close()
 
-    # Automatically save backup so certificates are permanent
     backup_certificates_to_json()
-
-    return {"success": True, "id": cert_id, "message": "Certificate issued successfully and backed up permanently!"}
+    return {"success": True, "id": cert_id, "message": "Certificate issued and saved permanently!"}
 
 @app.put("/api/admin/certificates/{cert_id}")
 def update_certificate(cert_id: int, data: CertificateUpdate, token: str = Depends(verify_admin_token)):
     conn = get_db()
     cursor = conn.cursor()
-    updates = []
-    values = []
+    updates, values = [], []
     for field, val in data.model_dump(exclude_unset=True).items():
         updates.append(f"{field} = ?")
         values.append(val)
@@ -1772,8 +1805,7 @@ def update_certificate(cert_id: int, data: CertificateUpdate, token: str = Depen
     conn.close()
 
     backup_certificates_to_json()
-
-    return {"success": True, "message": "Certificate updated successfully"}
+    return {"success": True}
 
 @app.delete("/api/admin/certificates/{cert_id}")
 def delete_certificate(cert_id: int, token: str = Depends(verify_admin_token)):
@@ -1784,8 +1816,7 @@ def delete_certificate(cert_id: int, token: str = Depends(verify_admin_token)):
     conn.close()
 
     backup_certificates_to_json()
-
-    return {"success": True, "message": "Certificate deleted"}
+    return {"success": True}
 
 @app.get("/api/admin/courses")
 def list_all_courses(token: str = Depends(verify_admin_token)):
@@ -1800,21 +1831,17 @@ def list_all_courses(token: str = Depends(verify_admin_token)):
 def create_course(data: CourseCreate, token: str = Depends(verify_admin_token)):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO courses (title, category, duration, fee, description, syllabus, is_active)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (data.title, data.category, data.duration, data.fee, data.description, data.syllabus, data.is_active))
+    cursor.execute("INSERT INTO courses (title, category, duration, fee, description, syllabus, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)", (data.title, data.category, data.duration, data.fee, data.description, data.syllabus, data.is_active))
     course_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    return {"success": True, "id": course_id, "message": "Course created successfully"}
+    return {"success": True, "id": course_id}
 
 @app.put("/api/admin/courses/{course_id}")
 def update_course(course_id: int, data: CourseUpdate, token: str = Depends(verify_admin_token)):
     conn = get_db()
     cursor = conn.cursor()
-    updates = []
-    values = []
+    updates, values = [], []
     for field, val in data.model_dump(exclude_unset=True).items():
         updates.append(f"{field} = ?")
         values.append(val)
@@ -1823,7 +1850,7 @@ def update_course(course_id: int, data: CourseUpdate, token: str = Depends(verif
         cursor.execute(f"UPDATE courses SET {', '.join(updates)} WHERE id = ?", values)
         conn.commit()
     conn.close()
-    return {"success": True, "message": "Course updated successfully"}
+    return {"success": True}
 
 @app.delete("/api/admin/courses/{course_id}")
 def delete_course(course_id: int, token: str = Depends(verify_admin_token)):
@@ -1832,13 +1859,9 @@ def delete_course(course_id: int, token: str = Depends(verify_admin_token)):
     cursor.execute("DELETE FROM courses WHERE id = ?", (course_id,))
     conn.commit()
     conn.close()
-    return {"success": True, "message": "Course deleted"}
+    return {"success": True}
 
-
-# =========================================================
-#                 WEB PAGE UI RENDERING
-# =========================================================
-
+# UI Render
 @app.get("/", response_class=HTMLResponse)
 def home():
     return ADMIN_HTML
