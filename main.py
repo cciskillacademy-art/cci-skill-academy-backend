@@ -3,6 +3,8 @@ import random
 import time
 import secrets
 import smtplib
+import json
+import sqlite3
 import urllib.request
 import urllib.parse
 from email.mime.text import MIMEText
@@ -15,15 +17,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from database import get_db, init_db, hash_password
+from database import get_db, init_db, hash_password, backup_certificates_to_json
 
 # Initialize Database on startup
 init_db()
 
 app = FastAPI(
     title="CCI Skill Academy Backend API",
-    description="Official Backend, Admin Portal, Certificate Verification and WhatsApp Alert System for CCI Skill Academy",
-    version="3.0.0"
+    description="Official Backend, Admin Portal, Certificate Verification and Live Persistence for CCI Skill Academy",
+    version="3.1.0"
 )
 
 # Enable CORS for frontend website integration
@@ -1314,18 +1316,11 @@ OTP_STORAGE = {}
 
 # ----------------- WHATSAPP NOTIFICATION DISPATCHER -----------------
 def send_whatsapp_lead_alert(full_name: str, mobile: str, course: str, message: str = ""):
-    """
-    Sends real-time WhatsApp alert to Admin phone (+91 95240 72944) when a new student applies.
-    Uses free CallMeBot / Webhook API with zero blockage.
-    """
     try:
         text = f"🔔 *CCI SKILL ACADEMY - NEW ADMISSION LEAD*\n\n👤 *Student:* {full_name}\n📱 *Mobile:* {mobile}\n🎓 *Course:* {course}\n💬 *Query:* {message or 'Website enquiry'}\n⏰ *Time:* {datetime.now().strftime('%d-%m-%Y %I:%M %p')}"
         encoded_text = urllib.parse.quote(text)
-        
-        # Free Webhook / API Dispatcher
         webhook_url = f"https://api.callmebot.com/whatsapp.php?phone={ADMIN_WHATSAPP}&text={encoded_text}&apikey=free"
         req = urllib.request.Request(webhook_url, headers={"User-Agent": "Mozilla/5.0"})
-        # Non-blocking quick dispatch
         urllib.request.urlopen(req, timeout=4)
         print(f"[+] WhatsApp Alert dispatched to {ADMIN_WHATSAPP}")
     except Exception as e:
@@ -1529,7 +1524,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "CCI Skill Academy Backend",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -1579,7 +1574,6 @@ def login(payload: LoginRequest):
         "role": "admin"
     }
 
-# 2. Public Enquiry Submission with Live WhatsApp Alert
 @app.post("/api/enquiries")
 def submit_enquiry(data: EnquiryCreate):
     conn = get_db()
@@ -1592,7 +1586,6 @@ def submit_enquiry(data: EnquiryCreate):
     conn.commit()
     conn.close()
 
-    # Trigger Instant WhatsApp Alert to Academy Director
     send_whatsapp_lead_alert(data.full_name, data.mobile, data.course_interest, data.message or "")
 
     return {
@@ -1611,12 +1604,32 @@ def get_public_courses():
     conn.close()
     return [dict(row) for row in rows]
 
+# SMART & FLEXIBLE CERTIFICATE VERIFICATION
 @app.get("/api/certificates/verify/{cert_number}")
 def verify_certificate(cert_number: str):
+    clean_query = cert_number.strip().upper()
+    stripped_query = clean_query.replace("-", "").replace(" ", "").replace("/", "")
+
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM certificates WHERE UPPER(cert_number) = UPPER(?)", (cert_number.strip(),))
+    
+    # 1. Try exact match
+    cursor.execute("SELECT * FROM certificates WHERE UPPER(cert_number) = ?", (clean_query,))
     cert = cursor.fetchone()
+
+    # 2. Try flexible stripped match (handles hyphen/space variations)
+    if not cert:
+        cursor.execute("""
+            SELECT * FROM certificates 
+            WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ?
+        """, (stripped_query,))
+        cert = cursor.fetchone()
+
+    # 3. Try student name match
+    if not cert and len(clean_query) >= 3:
+        cursor.execute("SELECT * FROM certificates WHERE UPPER(student_name) LIKE ?", (f"%{clean_query}%",))
+        cert = cursor.fetchone()
+
     conn.close()
 
     if not cert:
@@ -1737,7 +1750,11 @@ def create_certificate(data: CertificateCreate, token: str = Depends(verify_admi
         conn.close()
         raise HTTPException(status_code=400, detail=f"Certificate number '{data.cert_number}' already exists!")
     conn.close()
-    return {"success": True, "id": cert_id, "message": "Certificate issued successfully"}
+
+    # Automatically save backup so certificates are permanent
+    backup_certificates_to_json()
+
+    return {"success": True, "id": cert_id, "message": "Certificate issued successfully and backed up permanently!"}
 
 @app.put("/api/admin/certificates/{cert_id}")
 def update_certificate(cert_id: int, data: CertificateUpdate, token: str = Depends(verify_admin_token)):
@@ -1753,6 +1770,9 @@ def update_certificate(cert_id: int, data: CertificateUpdate, token: str = Depen
         cursor.execute(f"UPDATE certificates SET {', '.join(updates)} WHERE id = ?", values)
         conn.commit()
     conn.close()
+
+    backup_certificates_to_json()
+
     return {"success": True, "message": "Certificate updated successfully"}
 
 @app.delete("/api/admin/certificates/{cert_id}")
@@ -1762,6 +1782,9 @@ def delete_certificate(cert_id: int, token: str = Depends(verify_admin_token)):
     cursor.execute("DELETE FROM certificates WHERE id = ?", (cert_id,))
     conn.commit()
     conn.close()
+
+    backup_certificates_to_json()
+
     return {"success": True, "message": "Certificate deleted"}
 
 @app.get("/api/admin/courses")
