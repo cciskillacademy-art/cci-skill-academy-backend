@@ -84,7 +84,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                     <label class="block text-xs font-semibold text-slate-300 mb-1">Username</label>
                     <div class="relative">
                         <i class="fa-solid fa-user absolute left-3 top-3.5 text-slate-400 text-sm"></i>
-                        <input type="text" id="loginUsername" value="admin" required
+                        <input type="text" id="loginUsername" required placeholder="Enter username" autocomplete="off"
                             class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-brand-500 text-sm">
                     </div>
                 </div>
@@ -92,10 +92,9 @@ ADMIN_HTML = """<!DOCTYPE html>
                     <label class="block text-xs font-semibold text-slate-300 mb-1">Password</label>
                     <div class="relative">
                         <i class="fa-solid fa-lock absolute left-3 top-3.5 text-slate-400 text-sm"></i>
-                        <input type="password" id="loginPassword" value="Admin@123" required
+                        <input type="password" id="loginPassword" required placeholder="Enter password" autocomplete="new-password"
                             class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-brand-500 text-sm">
                     </div>
-                    <p class="text-[11px] text-slate-500 mt-1">Default Login: admin / Admin@123</p>
                 </div>
                 <button type="submit" id="loginBtn"
                     class="w-full bg-brand-600 hover:bg-brand-500 text-white font-semibold py-3 rounded-xl transition duration-200 shadow-lg shadow-brand-500/25 flex items-center justify-center">
@@ -523,7 +522,7 @@ ADMIN_HTML = """<!DOCTYPE html>
 
     <!-- JAVASCRIPT LOGIC -->
     <script>
-        let authToken = localStorage.getItem("cci_admin_token") || "cci-master-admin-session-token";
+        let authToken = localStorage.getItem("cci_admin_token");
         let allCertificates = [];
 
         window.addEventListener("DOMContentLoaded", () => {
