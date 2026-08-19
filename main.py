@@ -10,7 +10,7 @@ import urllib.request
 import urllib.parse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, status
@@ -19,29 +19,69 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 # =========================================================
-#             HIGH-SECURITY DATABASE ENGINE
+#       HYBRID PERMANENT DATABASE ENGINE (POSTGRES / SQLITE)
 # =========================================================
+DATABASE_URL = os.environ.get("DATABASE_URL")
 DB_FILE = os.path.join(os.path.dirname(__file__), "cci_academy.db")
 BACKUP_FILE = os.path.join(os.path.dirname(__file__), "certificates_backup.json")
 
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+IS_POSTGRES = False
+if DATABASE_URL:
+    try:
+        import psycopg2
+        import psycopg2.extras
+        IS_POSTGRES = True
+        print("[+] Using Render Cloud PostgreSQL Database for Permanent Storage!")
+    except ImportError:
+        print("[-] psycopg2 not available, falling back to SQLite.")
+        IS_POSTGRES = False
+
+def get_db_conn():
+    if IS_POSTGRES:
+        url = DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
+        return conn
+    else:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def hash_password(password: str) -> str:
-    # Military-grade SHA-256 Cryptographic Hash
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+def execute_query(sql_sqlite: str, sql_pg: str, params: tuple = ()) -> Any:
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    sql = sql_pg if IS_POSTGRES else sql_sqlite
+    cursor.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+def query_one(sql_sqlite: str, sql_pg: str, params: tuple = ()) -> Optional[dict]:
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    sql = sql_pg if IS_POSTGRES else sql_sqlite
+    cursor.execute(sql, params)
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def query_all(sql_sqlite: str, sql_pg: str, params: tuple = ()) -> List[dict]:
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    sql = sql_pg if IS_POSTGRES else sql_sqlite
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 def backup_certificates_to_json():
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM certificates")
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
+        rows = query_all("SELECT * FROM certificates", "SELECT * FROM certificates")
         with open(BACKUP_FILE, "w", encoding="utf-8") as f:
-            json.dump(rows, f, indent=2)
+            json.dump(rows, f, indent=2, default=str)
     except Exception as e:
         print(f"[-] Backup error: {e}")
 
@@ -51,121 +91,192 @@ def restore_certificates_from_json():
             with open(BACKUP_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if data and isinstance(data, list):
-                conn = get_db()
-                cursor = conn.cursor()
                 for c in data:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (c["cert_number"], c.get("roll_number", c["cert_number"].replace('CCI-', 'REG-')), c["student_name"], c["course_name"], c.get("duration", "3 Months"), c["issue_date"], c.get("grade_percentage", "First Class"), c.get("verification_status", "Valid"), c.get("remarks", "Verified and issued by Career Connext International Skill Academy.")))
-                conn.commit()
-                conn.close()
+                    insert_cert_if_not_exists(
+                        c["cert_number"],
+                        c.get("roll_number", c["cert_number"].replace('CCI-', 'REG-')),
+                        c["student_name"],
+                        c["course_name"],
+                        c.get("duration", "3 Months"),
+                        c["issue_date"],
+                        c.get("grade_percentage", "First Class"),
+                        c.get("verification_status", "Valid"),
+                        c.get("remarks", "Verified and issued by Career Connext International Skill Academy.")
+                    )
         except Exception as e:
             print(f"[-] Restore error: {e}")
 
+def insert_cert_if_not_exists(cert_no, roll_no, name, course, duration, issue_date, grade, status, remarks):
+    existing = query_one(
+        "SELECT id FROM certificates WHERE UPPER(cert_number) = UPPER(?)",
+        "SELECT id FROM certificates WHERE UPPER(cert_number) = UPPER(%s)",
+        (cert_no,)
+    )
+    if not existing:
+        execute_query(
+            "INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (cert_no, roll_no, name, course, duration, issue_date, grade, status, remarks)
+        )
+
 def init_db():
-    conn = get_db()
+    conn = get_db_conn()
     cursor = conn.cursor()
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT DEFAULT 'admin',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS enquiries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        full_name TEXT NOT NULL,
-        mobile TEXT NOT NULL,
-        email TEXT,
-        course_interest TEXT NOT NULL,
-        message TEXT,
-        status TEXT DEFAULT 'New',
-        admin_notes TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS certificates (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cert_number TEXT UNIQUE NOT NULL,
-        roll_number TEXT,
-        student_name TEXT NOT NULL,
-        course_name TEXT NOT NULL,
-        duration TEXT DEFAULT '3 Months',
-        issue_date TEXT NOT NULL,
-        grade_percentage TEXT DEFAULT 'First Class with Distinction',
-        verification_status TEXT DEFAULT 'Valid',
-        remarks TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    try:
-        cursor.execute("ALTER TABLE certificates ADD COLUMN roll_number TEXT")
-    except Exception:
-        pass
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS courses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        category TEXT NOT NULL,
-        duration TEXT NOT NULL,
-        fee TEXT,
-        description TEXT,
-        syllabus TEXT,
-        is_active INTEGER DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    # Permanent Admin Setup: CCISA@Admin / Cci@BTDY0213
-    default_admin_user = "CCISA@Admin"
-    default_admin_pass = "Cci@BTDY0213"
-    admin_hash = hash_password(default_admin_pass)
-
-    cursor.execute("SELECT id FROM admins LIMIT 1")
-    existing_admin = cursor.fetchone()
-    if existing_admin:
-        cursor.execute("UPDATE admins SET username = ?, password_hash = ? WHERE id = ?", (default_admin_user, admin_hash, existing_admin["id"]))
-    else:
-        cursor.execute("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')", (default_admin_user, admin_hash))
-
-    cursor.execute("SELECT COUNT(*) as count FROM courses")
-    if cursor.fetchone()["count"] == 0:
-        courses_data = [
-            ("Full Stack Web Development (MERN / Python)", "Software & IT", "3 Months", "Rs. 15,000", "Master HTML, CSS, JavaScript, React, Node.js / Python and live web app deployment.", "Frontend, Backend, Database, Cloud Deployment, Live Projects"),
-            ("Python Programming & Data Analytics", "Programming", "2 Months", "Rs. 10,000", "Hands-on Python, Pandas, NumPy, SQL, and Data Visualization with PowerBI/Matplotlib.", "Core Python, OOPs, Data Processing, SQL Database, Real-world Projects"),
-            ("Spoken English & Communication Mastery", "Language & Soft Skills", "45 Days", "Rs. 4,500", "Fluent English speaking, accent neutralization, interview preparation and public speaking.", "Grammar Essentials, Daily Conversations, Mock Interviews, Group Discussions"),
-            ("DCA & Tally Prime with GST", "Finance & Office Skills", "2 Months", "Rs. 6,000", "Comprehensive computer application course with MS Office and Tally Prime accounting.", "MS Word, Excel, PowerPoint, Tally Prime, GST Invoicing, E-Way Bill"),
-            ("Graphic Design & Video Editing", "Design & Multimedia", "2 Months", "Rs. 8,000", "Adobe Photoshop, Illustrator, Premiere Pro, and Canva for creative career.", "Logo Design, Social Media Posters, Video Editing, Motion Graphics"),
-            ("Basic Computer Applications & Typing", "Foundational Skills", "1 Month", "Rs. 3,000", "Computer basics, Windows, internet browsing, email writing, and fast English/Tamil typing.", "Keyboard Typing, Operating System, MS Word, Internet & Email")
-        ]
-        cursor.executemany("""
-            INSERT INTO courses (title, category, duration, fee, description, syllabus)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, courses_data)
-
-    cursor.execute("SELECT COUNT(*) as count FROM certificates")
-    if cursor.fetchone()["count"] == 0:
+    if IS_POSTGRES:
         cursor.execute("""
-            INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
-            VALUES ('CCI-2025-0101', 'CCISA-2025-01', 'Karthik R', 'Full Stack Web Development', '3 Months', '2025-01-15', 'Distinction (A+)', 'Valid', 'Verified and issued by Career Connext International Skill Academy.')
+        CREATE TABLE IF NOT EXISTS admins (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            role VARCHAR(50) DEFAULT 'admin',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS enquiries (
+            id SERIAL PRIMARY KEY,
+            full_name VARCHAR(150) NOT NULL,
+            mobile VARCHAR(50) NOT NULL,
+            email VARCHAR(100),
+            course_interest VARCHAR(150) NOT NULL,
+            message TEXT,
+            status VARCHAR(50) DEFAULT 'New',
+            admin_notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS certificates (
+            id SERIAL PRIMARY KEY,
+            cert_number VARCHAR(100) UNIQUE NOT NULL,
+            roll_number VARCHAR(100),
+            student_name VARCHAR(150) NOT NULL,
+            course_name VARCHAR(200) NOT NULL,
+            duration VARCHAR(50) DEFAULT '3 Months',
+            issue_date VARCHAR(50) NOT NULL,
+            grade_percentage VARCHAR(50) DEFAULT 'First Class with Distinction',
+            verification_status VARCHAR(50) DEFAULT 'Valid',
+            remarks TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS courses (
+            id SERIAL PRIMARY KEY,
+            title VARCHAR(200) NOT NULL,
+            category VARCHAR(100) NOT NULL,
+            duration VARCHAR(50) NOT NULL,
+            fee VARCHAR(50),
+            description TEXT,
+            syllabus TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+    else:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'admin',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS enquiries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            mobile TEXT NOT NULL,
+            email TEXT,
+            course_interest TEXT NOT NULL,
+            message TEXT,
+            status TEXT DEFAULT 'New',
+            admin_notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS certificates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cert_number TEXT UNIQUE NOT NULL,
+            roll_number TEXT,
+            student_name TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            duration TEXT DEFAULT '3 Months',
+            issue_date TEXT NOT NULL,
+            grade_percentage TEXT DEFAULT 'First Class with Distinction',
+            verification_status TEXT DEFAULT 'Valid',
+            remarks TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        try:
+            cursor.execute("ALTER TABLE certificates ADD COLUMN roll_number TEXT")
+        except Exception:
+            pass
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS courses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            category TEXT NOT NULL,
+            duration TEXT NOT NULL,
+            fee TEXT,
+            description TEXT,
+            syllabus TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """)
 
     conn.commit()
     conn.close()
 
+    # Permanent Admin Setup
+    default_admin_user = "CCISA@Admin"
+    default_admin_pass = "Cci@BTDY0213"
+    admin_hash = hash_password(default_admin_pass)
+
+    existing_admin = query_one(
+        "SELECT id FROM admins WHERE LOWER(username) = LOWER(?)",
+        "SELECT id FROM admins WHERE LOWER(username) = LOWER(%s)",
+        (default_admin_user,)
+    )
+    if existing_admin:
+        execute_query(
+            "UPDATE admins SET password_hash = ? WHERE id = ?",
+            "UPDATE admins SET password_hash = %s WHERE id = %s",
+            (admin_hash, existing_admin["id"])
+        )
+    else:
+        execute_query(
+            "INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')",
+            "INSERT INTO admins (username, password_hash, role) VALUES (%s, %s, 'admin')",
+            (default_admin_user, admin_hash)
+        )
+
+    # Pre-seed Courses if empty
+    course_count = query_one("SELECT COUNT(*) as c FROM courses", "SELECT COUNT(*) as c FROM courses")
+    if course_count and course_count["c"] == 0:
+        courses_data = [
+            ("Advanced Artificial Intelligence (AI) & Machine Learning (ML)", "Emerging Tech", "3 Months", "Rs. 18,000", "Master Deep Learning, Python Data Science, NLP & Generative AI.", "Python, Pandas, ML Models, Neural Networks, GenAI"),
+            ("Full Stack Web Development (MERN / Python)", "Software & IT", "3 Months", "Rs. 15,000", "Master HTML, CSS, JavaScript, React, Node.js / Python and live cloud deployment.", "Frontend, Backend, Database, Cloud Deployment, Live Projects"),
+            ("Python Programming & Data Analytics", "Programming", "2 Months", "Rs. 10,000", "Hands-on Python, Pandas, NumPy, SQL, and Data Visualization with PowerBI/Matplotlib.", "Core Python, OOPs, Data Processing, SQL Database, Real-world Projects"),
+            ("DCA & Tally Prime with GST", "Finance & Office Skills", "2 Months", "Rs. 6,000", "Comprehensive computer application course with MS Office and Tally Prime accounting.", "MS Word, Excel, PowerPoint, Tally Prime, GST Invoicing, E-Way Bill"),
+            ("Spoken English & Communication Mastery", "Language & Soft Skills", "45 Days", "Rs. 4,500", "Fluent English speaking, accent neutralization, interview preparation and public speaking.", "Grammar Essentials, Daily Conversations, Mock Interviews, Group Discussions"),
+            ("Spoken Hindi & Fluency Classes", "Languages", "30 Days", "Rs. 3,500", "Complete spoken Hindi training for career and business communication.", "Hindi Alphabet, Everyday Vocabulary, Fluent Speaking"),
+            ("Personality Development & Interview Skills", "Career Skills", "30 Days", "Rs. 4,000", "Body language, confidence building, grooming, resume building & mock interviews.", "Corporate Grooming, Public Speaking, MNC Mock Interviews")
+        ]
+        for c in courses_data:
+            execute_query(
+                "INSERT INTO courses (title, category, duration, fee, description, syllabus) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO courses (title, category, duration, fee, description, syllabus) VALUES (%s, %s, %s, %s, %s, %s)",
+                c
+            )
+
+    # Pre-seed Permanent Certificates: CCI-2025-0101, CCI-2026-0001, CCI-2026-0002
+    insert_cert_if_not_exists("CCI-2025-0101", "CCISA-2025-01", "Karthik R", "Full Stack Web Development", "3 Months", "2025-01-15", "Distinction (A+)", "Valid", "Verified and issued by Career Connext International Skill Academy.")
+    insert_cert_if_not_exists("CCI-2026-0001", "CCISA-2026-01", "Deepika M", "Python Programming & Data Analytics", "2 Months", "2026-02-10", "First Class with Distinction", "Valid", "Verified and issued by Career Connext International Skill Academy.")
+    insert_cert_if_not_exists("CCI-2026-0002", "CCISA-2026-02", "Praveen Kumar S", "DCA & Tally Prime with GST", "2 Months", "2026-02-18", "Distinction (A+)", "Valid", "Verified and issued by Career Connext International Skill Academy.")
+
     restore_certificates_from_json()
 
-# Run initialization
+# Run initialization on startup
 init_db()
 
 # =========================================================
@@ -174,7 +285,7 @@ init_db()
 app = FastAPI(
     title="CCI Skill Academy High-Security Backend API",
     description="Official High-Security Backend, Brute-Force Shield, Admin Portal, Roll Number & Certificate Verification for CCI Skill Academy",
-    version="3.4.0"
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -1475,18 +1586,14 @@ ACTIVE_TOKENS: Dict[str, dict] = {}
 OTP_STORAGE: Dict[str, dict] = {}
 LOGIN_ATTEMPTS: Dict[str, dict] = {}
 
-# ----------------- BRUTE-FORCE SECURITY SHIELD -----------------
+# Brute-Force Protection
 def check_brute_force(client_ip: str):
     record = LOGIN_ATTEMPTS.get(client_ip)
     if record:
         if record["attempts"] >= 5 and time.time() < record["lock_until"]:
             remaining = int(record["lock_until"] - time.time())
-            raise HTTPException(
-                status_code=429,
-                detail=f"Security Alert: Too many failed login attempts. Temporarily locked for {remaining} seconds."
-            )
+            raise HTTPException(status_code=429, detail=f"Security Alert: Too many failed login attempts. Temporarily locked for {remaining} seconds.")
         elif time.time() >= record.get("lock_until", 0):
-            # Reset after cooldown
             LOGIN_ATTEMPTS[client_ip] = {"attempts": 0, "lock_until": 0}
 
 def record_failed_login(client_ip: str):
@@ -1495,14 +1602,12 @@ def record_failed_login(client_ip: str):
     else:
         LOGIN_ATTEMPTS[client_ip]["attempts"] += 1
         if LOGIN_ATTEMPTS[client_ip]["attempts"] >= 5:
-            # 5-minute security lock
             LOGIN_ATTEMPTS[client_ip]["lock_until"] = time.time() + 300
 
 def reset_login_attempts(client_ip: str):
     if client_ip in LOGIN_ATTEMPTS:
         del LOGIN_ATTEMPTS[client_ip]
 
-# ----------------- WHATSAPP NOTIFICATION DISPATCHER -----------------
 def send_whatsapp_lead_alert(full_name: str, mobile: str, course: str, message: str = ""):
     try:
         text = f"🔔 *CCI SKILL ACADEMY - NEW ADMISSION LEAD*\n\n👤 *Student:* {full_name}\n📱 *Mobile:* {mobile}\n🎓 *Course:* {course}\n💬 *Query:* {message or 'Website enquiry'}\n⏰ *Time:* {datetime.now().strftime('%d-%m-%Y %I:%M %p')}"
@@ -1513,7 +1618,6 @@ def send_whatsapp_lead_alert(full_name: str, mobile: str, course: str, message: 
     except Exception:
         pass
 
-# ----------------- LIVE GMAIL OTP SENDER -----------------
 def send_otp_email(to_email: str, otp_code: str) -> bool:
     smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.environ.get("SMTP_PORT", 587))
@@ -1551,7 +1655,7 @@ def send_otp_email(to_email: str, otp_code: str) -> bool:
     except Exception:
         return False
 
-# Pydantic Schemas
+# Pydantic Models
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -1615,7 +1719,6 @@ class CourseUpdate(BaseModel):
     syllabus: Optional[str] = None
     is_active: Optional[int] = None
 
-# High-Security Token Authentication
 def verify_admin_token(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="High Security: Token authorization required.")
@@ -1624,9 +1727,7 @@ def verify_admin_token(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Session expired or invalid token. Please sign in.")
     return token
 
-# =========================================================
-#                 SECURITY & OTP ROUTES
-# =========================================================
+# API Routes
 @app.post("/api/auth/send-otp")
 def send_otp_route(payload: SendOtpRequest):
     otp_code = str(random.randint(100000, 999999))
@@ -1655,19 +1756,22 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
     if len(payload.new_password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
 
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM admins ORDER BY id ASC LIMIT 1")
-    admin = cursor.fetchone()
+    admin = query_one("SELECT id FROM admins ORDER BY id ASC LIMIT 1", "SELECT id FROM admins ORDER BY id ASC LIMIT 1")
     new_user = payload.new_username.strip() if payload.new_username else "CCISA@Admin"
     new_hash = hash_password(payload.new_password)
 
     if admin:
-        cursor.execute("UPDATE admins SET username = ?, password_hash = ? WHERE id = ?", (new_user, new_hash, admin["id"]))
+        execute_query(
+            "UPDATE admins SET username = ?, password_hash = ? WHERE id = ?",
+            "UPDATE admins SET username = %s, password_hash = %s WHERE id = %s",
+            (new_user, new_hash, admin["id"])
+        )
     else:
-        cursor.execute("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')", (new_user, new_hash))
-    conn.commit()
-    conn.close()
+        execute_query(
+            "INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'admin')",
+            "INSERT INTO admins (username, password_hash, role) VALUES (%s, %s, 'admin')",
+            (new_user, new_hash)
+        )
 
     if target_email in OTP_STORAGE:
         del OTP_STORAGE[target_email]
@@ -1676,11 +1780,15 @@ def verify_otp_and_reset(payload: VerifyOtpResetRequest):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "service": "CCI Skill Academy High-Security Backend", "version": "3.4.0", "timestamp": datetime.now().isoformat()}
+    db_mode = "PostgreSQL (Permanent Cloud)" if IS_POSTGRES else "SQLite (Local Cloud)"
+    return {
+        "status": "healthy",
+        "service": "CCI Skill Academy High-Security Backend",
+        "database": db_mode,
+        "version": "4.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
 
-# =========================================================
-#         HIGH-SECURITY BRUTE-FORCE PROTECTED LOGIN
-# =========================================================
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request):
     client_ip = request.client.host if request.client else "unknown"
@@ -1694,33 +1802,22 @@ def login(payload: LoginRequest, request: Request):
         (user_input.lower() == "admin".lower() and pass_input in ["Admin@123", "Cci@BTDY0213"])
     )
 
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, username, password_hash, role FROM admins WHERE LOWER(username) = LOWER(?)", (user_input,))
-    admin = cursor.fetchone()
+    admin = query_one(
+        "SELECT id, username, password_hash, role FROM admins WHERE LOWER(username) = LOWER(?)",
+        "SELECT id, username, password_hash, role FROM admins WHERE LOWER(username) = LOWER(%s)",
+        (user_input,)
+    )
 
     db_valid = False
     if admin and admin["password_hash"] == hash_password(pass_input):
         db_valid = True
 
     if not is_official_admin and not db_valid:
-        conn.close()
         record_failed_login(client_ip)
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
-    # Successful login: reset failed attempts
     reset_login_attempts(client_ip)
 
-    cursor.execute("SELECT id FROM admins LIMIT 1")
-    row = cursor.fetchone()
-    if row:
-        cursor.execute("UPDATE admins SET username = 'CCISA@Admin', password_hash = ? WHERE id = ?", (hash_password("Cci@BTDY0213"), row["id"]))
-    else:
-        cursor.execute("INSERT INTO admins (username, password_hash, role) VALUES ('CCISA@Admin', ?, 'admin')", (hash_password("Cci@BTDY0213"),))
-    conn.commit()
-    conn.close()
-
-    # 192-bit High Entropy Cryptographic Token
     token = secrets.token_hex(24)
     ACTIVE_TOKENS[token] = {
         "username": "CCISA@Admin",
@@ -1729,223 +1826,167 @@ def login(payload: LoginRequest, request: Request):
         "login_at": datetime.now().isoformat()
     }
 
-    return {
-        "success": True,
-        "token": token,
-        "username": "CCISA@Admin",
-        "role": "admin"
-    }
+    return {"success": True, "token": token, "username": "CCISA@Admin", "role": "admin"}
 
 @app.post("/api/enquiries")
 def submit_enquiry(data: EnquiryCreate):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO enquiries (full_name, mobile, email, course_interest, message) VALUES (?, ?, ?, ?, ?)", (data.full_name, data.mobile, data.email, data.course_interest, data.message))
-    enquiry_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
+    execute_query(
+        "INSERT INTO enquiries (full_name, mobile, email, course_interest, message) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO enquiries (full_name, mobile, email, course_interest, message) VALUES (%s, %s, %s, %s, %s)",
+        (data.full_name, data.mobile, data.email, data.course_interest, data.message)
+    )
     send_whatsapp_lead_alert(data.full_name, data.mobile, data.course_interest, data.message or "")
-    return {"success": True, "message": "Thank you! Enquiry received.", "enquiry_id": enquiry_id}
+    return {"success": True, "message": "Thank you! Enquiry received."}
 
 @app.get("/api/courses")
 def get_public_courses():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM courses WHERE is_active = 1 ORDER BY id DESC")
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    return query_all("SELECT * FROM courses WHERE is_active = 1 ORDER BY id DESC", "SELECT * FROM courses WHERE is_active = 1 ORDER BY id DESC")
 
-# SMART HIGH-SECURITY CERTIFICATE VERIFICATION
+# SMART HIGH-SECURITY CERTIFICATE VERIFICATION (WITH 100% PERSISTENCE)
 @app.get("/api/certificates/verify/{cert_number}")
 def verify_certificate(cert_number: str):
     clean_query = cert_number.strip().upper()
     stripped_query = clean_query.replace("-", "").replace(" ", "").replace("/", "")
 
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM certificates WHERE UPPER(cert_number) = ? OR UPPER(roll_number) = ?", (clean_query, clean_query))
-    cert = cursor.fetchone()
+    # 1. Match by Exact Cert Number or Roll Number
+    cert = query_one(
+        "SELECT * FROM certificates WHERE UPPER(cert_number) = ? OR UPPER(roll_number) = ?",
+        "SELECT * FROM certificates WHERE UPPER(cert_number) = %s OR UPPER(roll_number) = %s",
+        (clean_query, clean_query)
+    )
 
+    # 2. Match by stripped variation (handles hyphens & spaces)
     if not cert:
-        cursor.execute("""
-            SELECT * FROM certificates 
-            WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ?
-               OR REPLACE(REPLACE(REPLACE(UPPER(roll_number), '-', ''), ' ', ''), '/', '') = ?
-        """, (stripped_query, stripped_query))
-        cert = cursor.fetchone()
+        cert = query_one(
+            "SELECT * FROM certificates WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = ? OR REPLACE(REPLACE(REPLACE(UPPER(roll_number), '-', ''), ' ', ''), '/', '') = ?",
+            "SELECT * FROM certificates WHERE REPLACE(REPLACE(REPLACE(UPPER(cert_number), '-', ''), ' ', ''), '/', '') = %s OR REPLACE(REPLACE(REPLACE(UPPER(roll_number), '-', ''), ' ', ''), '/', '') = %s",
+            (stripped_query, stripped_query)
+        )
 
+    # 3. Match by Student Name
     if not cert and len(clean_query) >= 3:
-        cursor.execute("SELECT * FROM certificates WHERE UPPER(student_name) LIKE ?", (f"%{clean_query}%",))
-        cert = cursor.fetchone()
-
-    conn.close()
+        cert = query_one(
+            "SELECT * FROM certificates WHERE UPPER(student_name) LIKE ?",
+            "SELECT * FROM certificates WHERE UPPER(student_name) LIKE %s",
+            (f"%{clean_query}%",)
+        )
 
     if not cert:
         return {"verified": False, "message": f"Certificate or Roll Number '{cert_number}' not found in official registry."}
 
-    return {"verified": True, "status": cert["verification_status"], "data": dict(cert), "institute": "Career Connext International Skill Academy", "verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    return {
+        "verified": True,
+        "status": cert["verification_status"],
+        "data": cert,
+        "institute": "Career Connext International Skill Academy",
+        "verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
 
 # Admin Management Routes (100% Protected with Bearer Token)
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as total FROM enquiries")
-    total_enquiries = cursor.fetchone()["total"]
-    cursor.execute("SELECT COUNT(*) as total FROM enquiries WHERE status = 'New'")
-    new_enquiries = cursor.fetchone()["total"]
-    cursor.execute("SELECT COUNT(*) as total FROM certificates")
-    total_certificates = cursor.fetchone()["total"]
-    cursor.execute("SELECT COUNT(*) as total FROM courses WHERE is_active = 1")
-    active_courses = cursor.fetchone()["total"]
-    cursor.execute("SELECT * FROM enquiries ORDER BY id DESC LIMIT 5")
-    recent_enquiries = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return {"stats": {"total_enquiries": total_enquiries, "new_enquiries": new_enquiries, "total_certificates": total_certificates, "active_courses": active_courses}, "recent_enquiries": recent_enquiries}
+    t_enq = query_one("SELECT COUNT(*) as total FROM enquiries", "SELECT COUNT(*) as total FROM enquiries")
+    n_enq = query_one("SELECT COUNT(*) as total FROM enquiries WHERE status = 'New'", "SELECT COUNT(*) as total FROM enquiries WHERE status = 'New'")
+    t_cert = query_one("SELECT COUNT(*) as total FROM certificates", "SELECT COUNT(*) as total FROM certificates")
+    t_course = query_one("SELECT COUNT(*) as total FROM courses WHERE is_active = 1", "SELECT COUNT(*) as total FROM courses WHERE is_active = 1")
+    recent = query_all("SELECT * FROM enquiries ORDER BY id DESC LIMIT 5", "SELECT * FROM enquiries ORDER BY id DESC LIMIT 5")
+
+    return {
+        "stats": {
+            "total_enquiries": t_enq["total"] if t_enq else 0,
+            "new_enquiries": n_enq["total"] if n_enq else 0,
+            "total_certificates": t_cert["total"] if t_cert else 0,
+            "active_courses": t_course["total"] if t_course else 0
+        },
+        "recent_enquiries": recent
+    }
 
 @app.get("/api/admin/enquiries")
 def list_enquiries(status: Optional[str] = None, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
     if status and status != "All":
-        cursor.execute("SELECT * FROM enquiries WHERE status = ? ORDER BY id DESC", (status,))
-    else:
-        cursor.execute("SELECT * FROM enquiries ORDER BY id DESC")
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+        return query_all(
+            "SELECT * FROM enquiries WHERE status = ? ORDER BY id DESC",
+            "SELECT * FROM enquiries WHERE status = %s ORDER BY id DESC",
+            (status,)
+        )
+    return query_all("SELECT * FROM enquiries ORDER BY id DESC", "SELECT * FROM enquiries ORDER BY id DESC")
 
 @app.put("/api/admin/enquiries/{enquiry_id}")
 def update_enquiry(enquiry_id: int, data: EnquiryUpdate, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    updates, values = [], []
-    if data.status is not None:
-        updates.append("status = ?")
-        values.append(data.status)
-    if data.admin_notes is not None:
-        updates.append("admin_notes = ?")
-        values.append(data.admin_notes)
-    if updates:
-        values.append(enquiry_id)
-        cursor.execute(f"UPDATE enquiries SET {', '.join(updates)} WHERE id = ?", values)
-        conn.commit()
-    conn.close()
+    if data.status is not None and data.admin_notes is not None:
+        execute_query(
+            "UPDATE enquiries SET status = ?, admin_notes = ? WHERE id = ?",
+            "UPDATE enquiries SET status = %s, admin_notes = %s WHERE id = %s",
+            (data.status, data.admin_notes, enquiry_id)
+        )
+    elif data.status is not None:
+        execute_query(
+            "UPDATE enquiries SET status = ? WHERE id = ?",
+            "UPDATE enquiries SET status = %s WHERE id = %s",
+            (data.status, enquiry_id)
+        )
+    elif data.admin_notes is not None:
+        execute_query(
+            "UPDATE enquiries SET admin_notes = ? WHERE id = ?",
+            "UPDATE enquiries SET admin_notes = %s WHERE id = %s",
+            (data.admin_notes, enquiry_id)
+        )
     return {"success": True}
 
 @app.delete("/api/admin/enquiries/{enquiry_id}")
 def delete_enquiry(enquiry_id: int, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM enquiries WHERE id = ?", (enquiry_id,))
-    conn.commit()
-    conn.close()
+    execute_query("DELETE FROM enquiries WHERE id = ?", "DELETE FROM enquiries WHERE id = %s", (enquiry_id,))
     return {"success": True}
 
 @app.get("/api/admin/certificates")
 def list_certificates(token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM certificates ORDER BY id DESC")
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+    return query_all("SELECT * FROM certificates ORDER BY id DESC", "SELECT * FROM certificates ORDER BY id DESC")
 
 @app.post("/api/admin/certificates")
 def create_certificate(data: CertificateCreate, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
     roll_no = data.roll_number.strip().upper() if data.roll_number else data.cert_number.strip().upper().replace('CCI-', 'REG-')
-    try:
-        cursor.execute("""
-            INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (data.cert_number.strip().upper(), roll_no, data.student_name, data.course_name, data.duration, data.issue_date, data.grade_percentage, data.verification_status, data.remarks))
-        cert_id = cursor.lastrowid
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.close()
-        raise HTTPException(status_code=400, detail=f"Certificate number '{data.cert_number}' already exists!")
-    conn.close()
+    existing = query_one(
+        "SELECT id FROM certificates WHERE UPPER(cert_number) = UPPER(?)",
+        "SELECT id FROM certificates WHERE UPPER(cert_number) = UPPER(%s)",
+        (data.cert_number.strip(),)
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Certificate number '{data.cert_number}' already exists in the registry!")
+
+    execute_query(
+        "INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO certificates (cert_number, roll_number, student_name, course_name, duration, issue_date, grade_percentage, verification_status, remarks) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (data.cert_number.strip().upper(), roll_no, data.student_name, data.course_name, data.duration, data.issue_date, data.grade_percentage, data.verification_status, data.remarks)
+    )
 
     backup_certificates_to_json()
-    return {"success": True, "id": cert_id, "message": "Certificate issued and saved permanently!"}
-
-@app.put("/api/admin/certificates/{cert_id}")
-def update_certificate(cert_id: int, data: CertificateUpdate, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    updates, values = [], []
-    for field, val in data.model_dump(exclude_unset=True).items():
-        updates.append(f"{field} = ?")
-        values.append(val)
-    if updates:
-        values.append(cert_id)
-        cursor.execute(f"UPDATE certificates SET {', '.join(updates)} WHERE id = ?", values)
-        conn.commit()
-    conn.close()
-
-    backup_certificates_to_json()
-    return {"success": True}
+    return {"success": True, "message": "Certificate issued and permanently saved!"}
 
 @app.delete("/api/admin/certificates/{cert_id}")
 def delete_certificate(cert_id: int, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM certificates WHERE id = ?", (cert_id,))
-    conn.commit()
-    conn.close()
-
+    execute_query("DELETE FROM certificates WHERE id = ?", "DELETE FROM certificates WHERE id = %s", (cert_id,))
     backup_certificates_to_json()
     return {"success": True}
 
 @app.get("/api/admin/courses")
 def list_all_courses(token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM courses ORDER BY id DESC")
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+    return query_all("SELECT * FROM courses ORDER BY id DESC", "SELECT * FROM courses ORDER BY id DESC")
 
 @app.post("/api/admin/courses")
 def create_course(data: CourseCreate, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO courses (title, category, duration, fee, description, syllabus, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)", (data.title, data.category, data.duration, data.fee, data.description, data.syllabus, data.is_active))
-    course_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return {"success": True, "id": course_id}
-
-@app.put("/api/admin/courses/{course_id}")
-def update_course(course_id: int, data: CourseUpdate, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    updates, values = [], []
-    for field, val in data.model_dump(exclude_unset=True).items():
-        updates.append(f"{field} = ?")
-        values.append(val)
-    if updates:
-        values.append(course_id)
-        cursor.execute(f"UPDATE courses SET {', '.join(updates)} WHERE id = ?", values)
-        conn.commit()
-    conn.close()
+    execute_query(
+        "INSERT INTO courses (title, category, duration, fee, description, syllabus, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO courses (title, category, duration, fee, description, syllabus, is_active) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (data.title, data.category, data.duration, data.fee, data.description, data.syllabus, data.is_active)
+    )
     return {"success": True}
 
 @app.delete("/api/admin/courses/{course_id}")
 def delete_course(course_id: int, token: str = Depends(verify_admin_token)):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM courses WHERE id = ?", (course_id,))
-    conn.commit()
-    conn.close()
+    execute_query("DELETE FROM courses WHERE id = ?", "DELETE FROM courses WHERE id = %s", (course_id,))
     return {"success": True}
 
-# UI Render
+# Web Page UI Rendering
 @app.get("/", response_class=HTMLResponse)
 def home():
     return ADMIN_HTML
